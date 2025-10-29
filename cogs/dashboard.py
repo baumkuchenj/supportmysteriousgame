@@ -90,7 +90,6 @@ class VoteSelect(discord.ui.Select):
         label = option.label if option else value
         await interaction.response.send_message(f"投票対象を {label} に設定しました。", ephemeral=True)
 
-
 class VoteView(discord.ui.View):
     def __init__(self, cog: "DashboardCog", ho_name: str, day: int, options: List[discord.SelectOption]) -> None:
         super().__init__(timeout=None)
