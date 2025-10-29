@@ -75,7 +75,7 @@ class VoteSelect(discord.ui.Select):
     def __init__(self, view: "VoteView", options: List[discord.SelectOption]) -> None:
         custom_id = f"{config.VOTE_VIEW_CUSTOM_ID}:{view.day}:{view.ho_name}"
         super().__init__(
-            placeholder="誰に投票しますか？",
+            placeholder=config.VOTE_PROMPT_TEXT,
             min_values=1,
             max_values=1,
             options=options,
@@ -89,7 +89,6 @@ class VoteSelect(discord.ui.Select):
         option = discord.utils.get(self.options, value=value)
         label = option.label if option else value
         await interaction.response.send_message(f"投票対象を {label} に設定しました。", ephemeral=True)
-
 
 class VoteView(discord.ui.View):
     def __init__(self, cog: "DashboardCog", ho_name: str, day: int, options: List[discord.SelectOption]) -> None:
@@ -370,13 +369,21 @@ class DashboardCog(commands.Cog):
                 try:
                     channel = await guild.fetch_channel(info.get("channel_id"))
                 except discord.NotFound:
+                    await self.send_log(
+                        guild,
+                        f"{ho_name} のチャンネルが見つからないため投票UIを送信できませんでした。",
+                    )
                     continue
             if not isinstance(channel, discord.TextChannel):
+                await self.send_log(
+                    guild,
+                    f"{ho_name} のチャンネルがテキストチャンネルではないため投票UIを送信できませんでした。",
+                )
                 continue
             view = VoteView(self, ho_name, day, options)
             embed = discord.Embed(
                 title=f"{day}日目の投票",
-                description="誰か一人を選択して投票してください。",
+                description=config.VOTE_PROMPT_TEXT,
                 colour=discord.Colour.gold(),
             )
             message = await channel.send(embed=embed, view=view)

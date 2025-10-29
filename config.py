@@ -29,5 +29,6 @@ HO_CATEGORY_NAME: str = "HO"
 
 VOTE_VIEW_CUSTOM_ID: str = "vote_selector"
 VOTE_SUBMIT_BUTTON_ID: str = "vote_submit"
+VOTE_PROMPT_TEXT: str = "誰か一人を選択してください"
 
 STORAGE_FILE_NAME: str = "game_state.json"
