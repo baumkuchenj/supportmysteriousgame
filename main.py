@@ -1,63 +1,85 @@
-"""Entry point for the Werewolf support Discord bot."""
-from __future__ import annotations
-
+# main.py
+import os
 import asyncio
 import logging
-import os
-from typing import List
-
 import discord
 from discord.ext import commands
+from discord import app_commands
 from dotenv import load_dotenv
 
-import storage
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+APP_ID = os.getenv("APPLICATION_ID")
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
+GUILD_ID = os.getenv("GUILD_ID")
 
-COG_MODULES: List[str] = [
-    "cogs.entry",
-    "cogs.game",
-    "cogs.dashboard",
-    "cogs.day_progress",
-]
+if not TOKEN or not APP_ID:
+    raise RuntimeError(".env の DISCORD_TOKEN / APPLICATION_ID を設定してください")
 
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+log = logging.getLogger("werewolf")
+
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
 
 
 class WerewolfBot(commands.Bot):
-    def __init__(self) -> None:
-        intents = discord.Intents.default()
-        intents.members = True
-        intents.guilds = True
-        intents.messages = True
-        super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=intents, application_id=int(APP_ID))
 
-    async def setup_hook(self) -> None:  # type: ignore[override]
-        await storage.Storage.ensure_loaded()
-        for module in COG_MODULES:
+    async def setup_hook(self):
+        # Load cogs
+        for ext in [
+            "cogs.entry_manager",
+            "cogs.game",
+            "cogs.day_progress",
+            "cogs.vote_manager",
+        ]:
             try:
-                await self.load_extension(module)
-                logger.info("Loaded extension %s", module)
-            except Exception:
-                logger.exception("Failed to load extension %s", module)
-        await self.tree.sync()
-        logger.info("Application commands synchronised")
+                await self.load_extension(ext)
+                log.info(f"✅ Loaded: {ext}")
+            except Exception as e:
+                log.exception(f"❌ Failed to load {ext}: {e}")
 
-    async def on_ready(self) -> None:
-        logger.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "unknown")
+        # Sync commands
+        try:
+            if DEBUG_MODE and GUILD_ID:
+                guild_obj = discord.Object(id=int(GUILD_ID))
+                synced = await self.tree.sync(guild=guild_obj)
+                log.info(f"🧪 Synced {len(synced)} guild cmds to {GUILD_ID}")
+            else:
+                synced = await self.tree.sync()
+                log.info(f"🌍 Synced {len(synced)} global cmds")
+        except Exception as e:
+            log.exception(f"❌ Sync failed: {e}")
+
+    async def on_ready(self):
+        log.info(f"✅ Logged in as {self.user} ({self.user.id})")
 
 
-async def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    load_dotenv()
-    token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        raise RuntimeError("DISCORD_TOKEN is not set in the environment.")
+async def run_bot():
     bot = WerewolfBot()
-    async with bot:
-        await bot.start(token)
+    backoff = [1, 2, 5, 10]
+    for i, wait in enumerate([0] + backoff, start=1):
+        try:
+            if wait:
+                log.warning(f"🌐 再接続試行 {i}/{len(backoff)+1}… {wait}s 後に再試行")
+                await asyncio.sleep(wait)
+            await bot.start(TOKEN)
+            return
+        except (OSError, discord.GatewayNotFound, discord.HTTPException) as e:
+            log.warning(f"⚠️ 接続エラー: {e}")
+            continue
+        except Exception:
+            log.exception("🔥 予期せぬ例外で停止")
+            break
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    if os.name == "nt":
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:
+            pass
+    asyncio.run(run_bot())

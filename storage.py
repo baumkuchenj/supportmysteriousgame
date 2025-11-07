@@ -1,99 +1,175 @@
-"""Persistent storage management for the Werewolf support bot."""
+# storage.py
 from __future__ import annotations
-
-import asyncio
+import os
 import json
-import logging
-from copy import deepcopy
-from pathlib import Path
-from typing import Any, Callable, Dict, MutableMapping, Optional
+from typing import Any, Dict, List, Optional, Union
 
-import config
-
-logger = logging.getLogger(__name__)
+Json = Dict[str, Any]
 
 
 class Storage:
-    """Small helper around a JSON file used to persist game state."""
+    data_file: str = "data.json"
+    _loaded: bool = False
 
-    _state: Optional[MutableMapping[str, Any]] = None
-    _lock: asyncio.Lock = asyncio.Lock()
-    _file_path: Path = Path(__file__).resolve().parent / config.STORAGE_FILE_NAME
+    data: Json = {
+        "participants": {},           # {guild_id: [ {id:int, name:str, ho: Optional[str]} ]}
+        "game": {},                   # {guild_id: {"day": int, "phase": str}}
+        "votes": {},                  # {guild_id: { voter_ho: target_ho|None, ... }}
+        "voting_open": {},            # {guild_id: bool}
+        "gm_vote_message_id": {},     # {guild_id: int}
+        "dashboard_message_id": {},   # {guild_id: int}
+    }
 
-    @classmethod
-    def _default_state(cls) -> MutableMapping[str, Any]:
-        return {
-            "entry": {
-                "message_id": None,
-                "channel_id": None,
-                "players": {},
-            },
-            "roles": {
-                "player_role_id": None,
-                "gm_role_id": None,
-                "ho_roles": {},
-            },
-            "gm": {
-                "category_id": None,
-                "control_channel_id": None,
-                "log_channel_id": None,
-                "dashboard_message_id": None,
-            },
-            "game": {
-                "started": False,
-                "current_day": 0,
-                "ho_category_id": None,
-                "ho_assignments": {},
-                "votes": {},
-                "vote_messages": {},
-            },
-        }
-
+    # ---------- IO ----------
     @classmethod
     async def ensure_loaded(cls) -> None:
-        async with cls._lock:
-            if cls._state is not None:
+        if cls._loaded:
+            return
+        if os.path.exists(cls.data_file):
+            try:
+                with open(cls.data_file, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                for k, v in cls.data.items():
+                    if k not in raw:
+                        raw[k] = v
+                cls.data = raw
+            except Exception:
+                cls._fresh()
+        else:
+            cls._fresh()
+        cls._loaded = True
+
+    @classmethod
+    def _fresh(cls) -> None:
+        cls.data = {"participants": {}, "game": {}, "votes": {}, "voting_open": {}, "gm_vote_message_id": {}, "dashboard_message_id": {}}
+        cls.save()
+
+    @classmethod
+    def save(cls) -> None:
+        try:
+            with open(cls.data_file, "w", encoding="utf-8") as f:
+                json.dump(cls.data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[Storage] save failed: {e}")
+
+    # ---------- helpers ----------
+    @classmethod
+    def _g(cls, guild_id: int) -> str:
+        return str(guild_id)
+
+    # ---------- participants ----------
+    @classmethod
+    def get_participants(cls, guild_id: int) -> List[Json]:
+        return list(cls.data["participants"].get(cls._g(guild_id), []))
+
+    @classmethod
+    def set_participants(cls, guild_id: int, participants: List[Json]) -> None:
+        gid = cls._g(guild_id)
+        cls.data["participants"][gid] = participants
+        cls.save()
+
+    @classmethod
+    def get_participant_names(cls, guild_id: int) -> List[str]:
+        return [str(p.get("name", "")) for p in cls.get_participants(guild_id)]
+
+    @classmethod
+    def add_participant(cls, guild_id: int, user: Union[Any, Dict[str, Any]]) -> None:
+        gid = cls._g(guild_id)
+        cls.data["participants"].setdefault(gid, [])
+        if hasattr(user, "id") and hasattr(user, "display_name"):
+            uid = int(user.id)
+            name = str(user.display_name)
+        else:
+            uid = int(user["id"])  # type: ignore[index]
+            name = str(user["name"])  # type: ignore[index]
+        for p in cls.data["participants"][gid]:
+            if int(p["id"]) == uid:
                 return
-            if cls._file_path.exists():
-                try:
-                    cls._state = json.loads(cls._file_path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError) as exc:
-                    logger.error("Failed to load state file: %s", exc)
-                    cls._state = cls._default_state()
-            else:
-                cls._file_path.write_text(json.dumps(cls._default_state(), ensure_ascii=False, indent=2), encoding="utf-8")
-                cls._state = cls._default_state()
+        cls.data["participants"][gid].append({"id": uid, "name": name, "ho": None})
+        cls.save()
 
     @classmethod
-    async def read_state(cls) -> MutableMapping[str, Any]:
-        await cls.ensure_loaded()
-        async with cls._lock:
-            assert cls._state is not None
-            return deepcopy(cls._state)
+    def remove_participant(cls, guild_id: int, user_id: int) -> None:
+        gid = cls._g(guild_id)
+        arr = cls.data["participants"].get(gid, [])
+        arr = [p for p in arr if int(p["id"]) != int(user_id)]
+        cls.data["participants"][gid] = arr
+        cls.save()
 
     @classmethod
-    async def update_state(
-        cls, mutator: Callable[[MutableMapping[str, Any]], None]
-    ) -> MutableMapping[str, Any]:
-        await cls.ensure_loaded()
-        async with cls._lock:
-            assert cls._state is not None
-            mutator(cls._state)
-            cls._file_path.write_text(
-                json.dumps(cls._state, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            return deepcopy(cls._state)
+    def assign_ho_sequential(cls, guild_id: int) -> List[Json]:
+        """
+        参加順に HO1, HO2, ... を割り当てて保存して返す
+        """
+        gid = cls._g(guild_id)
+        arr = cls.data["participants"].get(gid, [])
+        for i, p in enumerate(arr, start=1):
+            p["ho"] = f"HO{i}"
+        cls.data["participants"][gid] = arr
+        cls.save()
+        return arr
+
+    # ---------- game ----------
+    @classmethod
+    def ensure_game(cls, guild_id: int) -> None:
+        gid = cls._g(guild_id)
+        cls.data["game"].setdefault(gid, {"day": 1, "phase": "day"})
+        cls.save()
 
     @classmethod
-    async def reset_state(cls) -> None:
-        async with cls._lock:
-            cls._state = cls._default_state()
-            cls._file_path.write_text(
-                json.dumps(cls._state, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+    def reset_guild(cls, guild_id: int) -> None:
+        gid = cls._g(guild_id)
+        cls.data["participants"][gid] = []
+        cls.data["game"][gid] = {"day": 1, "phase": "day"}
+        cls.data["votes"][gid] = {}
+        cls.data["voting_open"][gid] = False
+        cls.data["gm_vote_message_id"].pop(gid, None)
+        cls.data["dashboard_message_id"].pop(gid, None)
+        cls.save()
 
+    # ---------- night vote ----------
+    @classmethod
+    def init_votes(cls, guild_id: int, participants_ho: List[str]) -> None:
+        gid = cls._g(guild_id)
+        cls.data["votes"].setdefault(gid, {})
+        cls.data["votes"][gid] = {voter: None for voter in participants_ho}
+        cls.save()
 
-async def get_state() -> MutableMapping[str, Any]:
-    return await Storage.read_state()
+    @classmethod
+    def set_vote(cls, guild_id: int, voter_ho: str, target_ho: Optional[str]) -> None:
+        gid = cls._g(guild_id)
+        cls.data["votes"].setdefault(gid, {})
+        cls.data["votes"][gid][voter_ho] = target_ho
+        cls.save()
+
+    @classmethod
+    def get_votes(cls, guild_id: int) -> Dict[str, Optional[str]]:
+        return dict(cls.data["votes"].get(cls._g(guild_id), {}))
+
+    @classmethod
+    def set_voting_open(cls, guild_id: int, is_open: bool) -> None:
+        cls.data["voting_open"][cls._g(guild_id)] = bool(is_open)
+        cls.save()
+
+    @classmethod
+    def is_voting_open(cls, guild_id: int) -> bool:
+        return bool(cls.data["voting_open"].get(cls._g(guild_id), False))
+
+    @classmethod
+    def set_gm_vote_message(cls, guild_id: int, message_id: int) -> None:
+        cls.data["gm_vote_message_id"][cls._g(guild_id)] = int(message_id)
+        cls.save()
+
+    @classmethod
+    def get_gm_vote_message(cls, guild_id: int) -> Optional[int]:
+        return cls.data["gm_vote_message_id"].get(cls._g(guild_id))
+
+    # ---------- dashboard panel message ----------
+    @classmethod
+    def set_dashboard_message(cls, guild_id: int, message_id: int) -> None:
+        cls.data["dashboard_message_id"][cls._g(guild_id)] = int(message_id)
+        cls.save()
+
+    @classmethod
+    def get_dashboard_message(cls, guild_id: int) -> Optional[int]:
+        return cls.data["dashboard_message_id"].get(cls._g(guild_id))

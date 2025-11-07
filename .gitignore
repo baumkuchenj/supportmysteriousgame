@@ -1,0 +1,10 @@
+.env
+service_account.json
+storage.json
+
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.DS_Store
+*.zip
