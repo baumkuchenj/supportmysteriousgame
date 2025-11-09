@@ -22,7 +22,15 @@ class DayProgressCog(commands.Cog):
         Storage.data["game"][str(interaction.guild.id)]["day"] += 1
         Storage.data["game"][str(interaction.guild.id)]["phase"] = "day"
         Storage.save()
-        await interaction.response.send_message("🌅 翌日に進みました", ephemeral=True)
+        # GM操作は表示せず、gm-logへ記載
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+        from utils.helpers import ensure_gm_environment as _egm
+        _, _, log = await _egm(interaction.guild)
+        await log.send(f"[GM Action] {interaction.user.mention} 翌日に進行")
 
     @app_commands.command(name="night_phase", description="夜に進行（Phase=night）")
     async def night_phase(self, interaction: discord.Interaction):
@@ -69,7 +77,15 @@ class DayProgressCog(commands.Cog):
             view = self._build_vote_view(guild.id, ho)
             await channel.send("誰か一人を選択してください", view=view)
 
-        await interaction.response.send_message("🌙 夜に移行し、各個別チャンネルに投票UIを配置しました", ephemeral=True)
+        # GM操作は表示せず、gm-logへ記載
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+        from utils.helpers import ensure_gm_environment as _egm
+        _, _, log = await _egm(guild)
+        await log.send(f"[GM Action] {interaction.user.mention} 夜フェーズへ移行し投票UIを配置")
 
     # ===== 内部ユーティリティ =====
     def _build_tally_text(self, guild_id: int) -> str:

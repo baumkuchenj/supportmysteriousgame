@@ -4,6 +4,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from storage import Storage
+from config import GM_ROLE_NAME, GM_CATEGORY_NAME, PRIVATE_CATEGORY_NAME, PLAYER_ROLE_NAME
+from utils.helpers import ensure_gm_environment, ensure_player_role
 
 
 class GameCog(commands.Cog):
@@ -15,9 +17,126 @@ class GameCog(commands.Cog):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
             return
+        guild = interaction.guild
         await Storage.ensure_loaded()
-        Storage.reset_guild(interaction.guild.id)
-        await interaction.response.send_message("🔁 このサーバーのゲームデータをリセットしました", ephemeral=True)
+        # 先に静かにdefer（UIに通知を出さない）
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+
+        # 1) 役職ロールの削除（GM除く、@everyone除く、Managed除く）
+        for role in list(guild.roles):
+            name = str(role.name)
+            if name == GM_ROLE_NAME or name == "@everyone":
+                continue
+            # HO系 or playerロールなどゲーム用ロールを対象にする
+            if name.startswith("HO") or name == PLAYER_ROLE_NAME or name == "霊界":
+                if role.managed:
+                    continue
+                try:
+                    await role.delete(reason="reset_game: cleanup game roles")
+                except discord.Forbidden:
+                    pass
+                except Exception:
+                    pass
+
+        # 2) GM専用カテゴリ内のチャンネルを削除（カテゴリ自体は残す）
+        gm_category = discord.utils.get(guild.categories, name=GM_CATEGORY_NAME)
+        if gm_category is not None:
+            for ch in list(gm_category.text_channels):
+                try:
+                    await ch.delete(reason="reset_game: cleanup GM専用 channels")
+                except discord.Forbidden:
+                    pass
+                except Exception:
+                    pass
+
+        # 3) 個別チャンネルカテゴリを削除（配下のチャンネルも削除）
+        private_category = discord.utils.get(guild.categories, name=PRIVATE_CATEGORY_NAME)
+        if private_category is not None:
+            for ch in list(private_category.text_channels):
+                try:
+                    await ch.delete(reason="reset_game: cleanup 個別チャンネル")
+                except discord.Forbidden:
+                    pass
+                except Exception:
+                    pass
+            try:
+                await private_category.delete(reason="reset_game: cleanup 個別チャンネル category")
+            except discord.Forbidden:
+                pass
+            except Exception:
+                pass
+
+        # 4) ストレージを初期化
+        Storage.reset_guild(guild.id)
+
+        # 応答はUIに出さず終了（必要であればgm-logに記録する運用も可）
+
+    @app_commands.command(name="add_spirit", description="死亡者を霊界に移動（役職\"霊界\"付与＆霊界チャンネル作成/入室）")
+    async def add_spirit(self, interaction: discord.Interaction, member: discord.Member):
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        guild = interaction.guild
+        await Storage.ensure_loaded()
+        # 静かにdefer（UIに通知は出さない）
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+        # playerロール保持者のみ対象
+        player_role = await ensure_player_role(guild)
+        if player_role and player_role not in member.roles:
+            # 何も表示しない方針のため、単に終了（gm-logに残す）
+            try:
+                _, _, log = await ensure_gm_environment(guild)
+                await log.send(f"[GM Action] {interaction.user.mention} 霊界付与失敗（対象がplayerロール未保持）: {member.display_name} ({member.id})")
+            except Exception:
+                pass
+            return
+        # 霊界ロールの用意
+        spirit_role = discord.utils.get(guild.roles, name="霊界")
+        if spirit_role is None:
+            try:
+                spirit_role = await guild.create_role(name="霊界", reason="Spirit role for afterlife chat")
+            except discord.Forbidden:
+                spirit_role = None
+        # 付与
+        if spirit_role is not None:
+            try:
+                if spirit_role not in member.roles:
+                    await member.add_roles(spirit_role, reason="Move to spirit (afterlife)")
+            except discord.Forbidden:
+                pass
+        # 霊界チャンネルの用意（個別チャンネルカテゴリ配下）
+        gm_role = discord.utils.get(guild.roles, name=GM_ROLE_NAME)
+        category = discord.utils.get(guild.categories, name=PRIVATE_CATEGORY_NAME)
+        if category is None:
+            try:
+                category = await guild.create_category(PRIVATE_CATEGORY_NAME, reason="Create private HO category")
+            except discord.Forbidden:
+                category = None
+        channel = discord.utils.get(guild.text_channels, name="霊界")
+        if channel is None and category is not None and spirit_role is not None:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                gm_role or guild.default_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
+                spirit_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
+            }
+            try:
+                channel = await guild.create_text_channel("霊界", category=category, overwrites=overwrites, reason="Create shared spirit channel")
+            except discord.Forbidden:
+                channel = None
+        # ログ
+        try:
+            _, _, log = await ensure_gm_environment(guild)
+            await log.send(f"[GM Action] {interaction.user.mention} 霊界付与: {member.display_name} ({member.id})")
+        except Exception:
+            pass
 
 
 async def setup(bot: commands.Bot):

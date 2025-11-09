@@ -59,15 +59,30 @@ class AddPlayerSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.guild:
+            if not interaction.response.is_done():
+                try:
+                    await interaction.response.defer(ephemeral=True, thinking=False)
+                except Exception:
+                    pass
             return
         gid = interaction.guild.id
         val = self.values[0]
         if val == "none":
-            await interaction.response.send_message("候補がありません", ephemeral=True)
+            if not interaction.response.is_done():
+                try:
+                    await interaction.response.defer(ephemeral=True, thinking=False)
+                except Exception:
+                    pass
+            await _gm_log_interaction(interaction, "追加候補がありませんでした")
             return
         member = interaction.guild.get_member(int(val))
         if member is None:
-            await interaction.response.send_message("メンバーが見つかりません", ephemeral=True)
+            if not interaction.response.is_done():
+                try:
+                    await interaction.response.defer(ephemeral=True, thinking=False)
+                except Exception:
+                    pass
+            await _gm_log_interaction(interaction, f"メンバーが見つかりません: {val}")
             return
         Storage.add_participant(gid, member)
         # 参加者ロール付与
@@ -77,7 +92,11 @@ class AddPlayerSelect(discord.ui.Select):
                 await member.add_roles(player_role, reason="Add as werewolf participant")
         except discord.Forbidden:
             pass
-        await interaction.response.send_message(f"✅ 追加: {member.display_name}", ephemeral=True)
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
         await _gm_log_interaction(interaction, f"参加者追加: {member.display_name} ({member.id})")
         # Repost panel
         await _upsert_dashboard_panel(interaction.guild)
@@ -96,7 +115,12 @@ class RemovePlayerSelect(discord.ui.Select):
         gid = self._guild_id
         val = self.values[0]
         if val == "none":
-            await interaction.response.send_message("候補がありません", ephemeral=True)
+            if not interaction.response.is_done():
+                try:
+                    await interaction.response.defer(ephemeral=True, thinking=False)
+                except Exception:
+                    pass
+            await _gm_log_interaction(interaction, "削除候補がありませんでした")
             return
         Storage.remove_participant(gid, int(val))
         # 参加者ロール剥奪
@@ -109,7 +133,11 @@ class RemovePlayerSelect(discord.ui.Select):
                         await member.remove_roles(player_role, reason="Remove from werewolf participants")
                 except discord.Forbidden:
                     pass
-        await interaction.response.send_message("🗑️ 削除しました", ephemeral=True)
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
         if interaction.guild and member is not None:
             await _gm_log_interaction(interaction, f"参加者削除: {member.display_name} ({member.id})")
         if interaction.guild:
@@ -274,6 +302,11 @@ class EntryManagerCog(commands.Cog):
                     await _upsert_vote_tally(guild)
             except Exception:
                 pass
+            # 永続コンポーネント（役職連絡UI）のViewを再登録
+            try:
+                self.bot.add_view(_build_role_message_view(guild.id))
+            except Exception:
+                pass
 
     @app_commands.command(name="sync_players", description="playerロール保持者から参加者リストを再構築")
     async def sync_players(self, interaction: discord.Interaction):
@@ -313,10 +346,10 @@ async def _do_close_entry(interaction: discord.Interaction):
             await interaction.followup.send("参加者がいません。", ephemeral=True)
         return
 
-    # 長処理に入るため、未応答なら先にdeferしてインタラクションを保持
+    # 長処理に入るため、未応答なら先にdefer（表示は出さない）
     if not interaction.response.is_done():
         try:
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer(ephemeral=True, thinking=False)
         except Exception:
             pass
 
@@ -367,12 +400,11 @@ async def _do_close_entry(interaction: discord.Interaction):
         created_channels.append(channel.mention if channel else ho)
 
     summary = "、".join(created_channels) if created_channels else "(なし)"
-    # defer済みの可能性が高いので followup を優先
-    try:
-        await interaction.followup.send(f"✅ 参加者締め切り完了。作成/準備したチャンネル: {summary}", ephemeral=True)
-    except Exception:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"✅ 参加者締め切り完了。作成/準備したチャンネル: {summary}", ephemeral=True)
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+        except Exception:
+            pass
     await _gm_log_interaction(interaction, f"参加者募集を締め切り。作成/準備したチャンネル: {summary}")
 
 
@@ -444,8 +476,12 @@ async def _do_close_vote(interaction: discord.Interaction):
         except discord.NotFound:
             msg = await vote_channel.send(text)
             Storage.set_gm_vote_message(guild.id, msg.id)
-    # 役職連絡用のUIは gm-dashboard に掲載
-    await gm_dash.send("役職連絡: 役職/対象/送る内容を選んで送信してください", view=_build_role_message_view(guild.id))
+    # 役職連絡用のUIは gm-dashboard に掲載（新規を最新とし、過去UIは一括無効化）
+    new_msg = await gm_dash.send("役職連絡: 役職/対象/送る内容を選んで送信してください", view=_build_role_message_view(guild.id))
+    try:
+        await _disable_old_role_message_ui(guild, keep_id=new_msg.id)
+    except Exception:
+        pass
     await _gm_log_interaction(interaction, "夜の投票を締め切り。集計確定＆役職連絡UIを表示")
 
 
@@ -523,9 +559,7 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
     roles = [
         "占い",
         "霊能",
-        "狩人",
         "狂人",
-        "人狼",
     ]
     parts = Storage.get_participants(guild_id)
     ho_options = [discord.SelectOption(label=f"{p.get('ho')} {p.get('name','')}", value=str(p.get('ho'))) for p in parts if p.get("ho")]
@@ -540,13 +574,15 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
             self.selected_target_ho: str | None = None
             self.role_select = self.RoleSelect(self)
             self.dest_select = self.DestinationSelect(self)
-            self.target_select = self.TargetSelect(self)
             self.template_select = self.TemplateSelect(self)
             self.send_button = self.SendButton(self)
             self.nextday_button = self.NextDayButton(self)
+            # 夜に移行するボタンは最初は表示しない（翌日に進む後に表示）
+            self.night_button = self.NightPhaseButton(self)
+            # 投票を締め切るボタンは夜移行後に表示
+            self.closevote_button = self.CloseVoteButton(self)
             self.add_item(self.dest_select)
             self.add_item(self.role_select)
-            self.add_item(self.target_select)
             self.add_item(self.template_select)
             self.add_item(self.send_button)
             self.add_item(self.nextday_button)
@@ -554,24 +590,25 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
         def _compute_texts(self) -> tuple[str, str] | None:
             role = self.selected_role
             ho = self.selected_target_ho
-            if not role or not ho or ho == "none":
+            if not role:
                 return None
+            # 役職テンプレが対象不要な仕様に変更（占い/霊能/狂人は対象名を文面に含めない）
             name = None
-            for p in Storage.get_participants(guild_id):
-                if p.get("ho") == ho:
-                    name = p.get("name")
-                    break
-            disp = f"{ho}（{name}）" if name else ho
+            if ho and ho != "none":
+                for p in Storage.get_participants(guild_id):
+                    if p.get("ho") == ho:
+                        name = p.get("name")
+                        break
+            disp = f"{ho}（{name}）" if (ho and name) else (ho or "")
             if role == "占い":
-                return (f"天啓：{disp}は「村人」です。", f"天啓：{disp}は「狼」です。")
+                return (f"天啓：狼です。", f"天啓：狼ではないようだ。")
             if role == "霊能":
-                return (f"{disp} の霊能結果は『白』でした。", f"{disp} の霊能結果は『黒』でした。")
-            if role == "狩人":
-                return (f"今夜は {disp} を護衛します。", f"今夜は {disp} を護衛しません。")
+                return (f"天啓：狼です。", f"天啓：狼ではないようだ。")
             if role == "狂人":
-                return (f"{disp} へ作戦連絡: 村に溶け込め。", f"{disp} へ作戦連絡: 狼を支援せよ。")
-            if role == "人狼":
-                return (f"{disp} へ連絡: 今夜は潜伏。", f"{disp} へ連絡: 今夜は積極的に動け。")
+                return (
+                    f"あなたは今日、なんだか無性に寿司狼の味方をしなければならない気がしている。",
+                    f"あなたは今日、なんだか無性に寿司狼の味方をしなければならない気がしている。（別案）",
+                )
             return (f"{disp} へ連絡", f"{disp} へ連絡（別案）")
 
         async def _refresh_template_options(self, interaction: discord.Interaction):
@@ -612,7 +649,8 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
         class RoleSelect(discord.ui.Select):
             def __init__(self, parent: 'RoleMessageView'):
                 super().__init__(placeholder="役職を選択", min_values=1, max_values=1,
-                                 options=[discord.SelectOption(label=r, value=r) for r in roles])
+                                 options=[discord.SelectOption(label=r, value=r) for r in roles],
+                                 custom_id="rolemsg_role")
 
             async def callback(self, interaction: discord.Interaction):
                 pv: 'RoleMessageView' = self.view  # parent view provided by discord.py
@@ -621,26 +659,20 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
 
         class DestinationSelect(discord.ui.Select):
             def __init__(self, parent: 'RoleMessageView'):
-                super().__init__(placeholder="送信先HOの個別チャンネルを選択", min_values=1, max_values=1, options=ho_options)
+                super().__init__(placeholder="送信先HOの個別チャンネルを選択", min_values=1, max_values=1, options=ho_options,
+                                 custom_id="rolemsg_dest")
 
             async def callback(self, interaction: discord.Interaction):
                 pv: 'RoleMessageView' = self.view
                 pv.selected_dest_ho = self.values[0]
                 await interaction.response.edit_message(content=pv._summary_text(), view=pv)
 
-        class TargetSelect(discord.ui.Select):
-            def __init__(self, parent: 'RoleMessageView'):
-                super().__init__(placeholder="対象HOを選択", min_values=1, max_values=1, options=ho_options)
-
-            async def callback(self, interaction: discord.Interaction):
-                pv: 'RoleMessageView' = self.view
-                pv.selected_target_ho = self.values[0]
-                await pv._refresh_template_options(interaction)
 
         class TemplateSelect(discord.ui.Select):
             def __init__(self, parent: 'RoleMessageView'):
                 super().__init__(placeholder="送る内容を選択 (A/B)", min_values=1, max_values=1,
-                                 options=[discord.SelectOption(label="役職と対象を先に選択してください", value="none")])
+                                 options=[discord.SelectOption(label="役職と対象を先に選択してください", value="none")],
+                                 custom_id="rolemsg_tmpl")
 
             async def callback(self, interaction: discord.Interaction):
                 pv: 'RoleMessageView' = self.view
@@ -649,14 +681,13 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
 
         class SendButton(discord.ui.Button):
             def __init__(self, parent: 'RoleMessageView'):
-                super().__init__(label="送信", style=discord.ButtonStyle.success)
+                super().__init__(label="送信", style=discord.ButtonStyle.success, custom_id="rolemsg_send")
 
             async def callback(self, interaction: discord.Interaction):
                 pv: 'RoleMessageView' = self.view
                 role = pv.selected_role
                 dest = pv.selected_dest_ho
-                target = pv.selected_target_ho
-                if not role or not dest or dest == "none" or not target or target == "none" or not pv.template_select.values:
+                if not role or not dest or dest == "none" or not pv.template_select.values:
                     # 入力不足時はUI本文だけ更新
                     if not interaction.response.is_done():
                         await interaction.response.edit_message(content=pv._summary_text(), view=pv)
@@ -680,11 +711,11 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
                         await interaction.response.defer(ephemeral=True)
                     except Exception:
                         pass
-                await _gm_log_interaction(interaction, f"役職連絡送信: {role} → {dest} （対象: {target}, 選択: {ab}）")
+                await _gm_log_interaction(interaction, f"役職連絡送信: {role} → {dest} （選択: {ab}）")
 
         class NextDayButton(discord.ui.Button):
             def __init__(self, parent: 'RoleMessageView'):
-                super().__init__(label="翌日に進む", style=discord.ButtonStyle.primary)
+                super().__init__(label="翌日に進む", style=discord.ButtonStyle.primary, custom_id="rolemsg_next")
 
             async def callback(self, interaction: discord.Interaction):
                 await _do_next_day(interaction)
@@ -696,8 +727,89 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
                     except Exception:
                         pass
                 await _gm_log_interaction(interaction, "翌日に進む（役職連絡は送信せず）")
+                # 自身を無効化し、夜に移行するボタンを追加
+                pv: 'RoleMessageView' = self.view
+                self.disabled = True
+                # まだ追加していなければ夜ボタンを追加
+                if pv and pv.night_button not in pv.children:
+                    pv.add_item(pv.night_button)
+                # メッセージ更新
+                try:
+                    await interaction.message.edit(content=pv._summary_text(), view=pv)
+                except Exception:
+                    pass
+
+        class NightPhaseButton(discord.ui.Button):
+            def __init__(self, parent: 'RoleMessageView'):
+                super().__init__(label="夜に移行する", style=discord.ButtonStyle.primary, custom_id="rolemsg_night")
+
+            async def callback(self, interaction: discord.Interaction):
+                # 夜フェーズへ移行し投票UIを展開
+                await _do_night_phase(interaction)
+                # 応答はdeferのみ（ダッシュボードに通知は出さない）
+                if not interaction.response.is_done():
+                    try:
+                        await interaction.response.defer(ephemeral=True)
+                    except Exception:
+                        pass
+                # 自身と翌日ボタンを無効化
+                pv: 'RoleMessageView' = self.view
+                self.disabled = True
+                if hasattr(pv, 'nextday_button') and pv.nextday_button:
+                    pv.nextday_button.disabled = True
+                # まだ追加していなければ「投票を締め切る」ボタンを追加
+                if pv and pv.closevote_button not in pv.children:
+                    pv.add_item(pv.closevote_button)
+                # メッセージ更新（ボタン群は無効化された状態で維持）
+                try:
+                    await interaction.message.edit(content=pv._summary_text(), view=pv)
+                except Exception:
+                    pass
+
+        class CloseVoteButton(discord.ui.Button):
+            def __init__(self, parent: 'RoleMessageView'):
+                super().__init__(label="投票を締め切る", style=discord.ButtonStyle.danger, custom_id="rolemsg_close")
+
+            async def callback(self, interaction: discord.Interaction):
+                # 投票締切処理
+                await _do_close_vote(interaction)
+                # 応答はdeferのみ（ダッシュボードに通知は出さない）
+                if not interaction.response.is_done():
+                    try:
+                        await interaction.response.defer(ephemeral=True)
+                    except Exception:
+                        pass
+                # 自身を無効化（再度押せないように）
+                pv: 'RoleMessageView' = self.view
+                self.disabled = True
+                # メッセージ更新
+                try:
+                    await interaction.message.edit(content=pv._summary_text(), view=pv)
+                except Exception:
+                    pass
 
     return RoleMessageView()
+
+
+async def _disable_old_role_message_ui(guild: discord.Guild, keep_id: int) -> None:
+    """Disable components on older RoleMessage UI messages in gm-dashboard, keeping only the latest active.
+    Messages are identified by content prefix "役職連絡:". Components are removed by editing view=None.
+    """
+    _, gm_dash, _ = await ensure_gm_environment(guild)
+    async for msg in gm_dash.history(limit=100):
+        if int(msg.id) == int(keep_id):
+            continue
+        # remove components for old role message UIs
+        try:
+            text = msg.content or ""
+        except Exception:
+            text = ""
+        if isinstance(text, str) and text.startswith("役職連絡:"):
+            if getattr(msg, "components", None):
+                try:
+                    await msg.edit(content=msg.content, view=None)
+                except Exception:
+                    pass
 
     class TargetSelect(discord.ui.Select):
         def __init__(self):

@@ -113,14 +113,14 @@ class Storage:
     @classmethod
     def ensure_game(cls, guild_id: int) -> None:
         gid = cls._g(guild_id)
-        cls.data["game"].setdefault(gid, {"day": 1, "phase": "day"})
+        cls.data["game"].setdefault(gid, {"day": 0, "phase": "day"})
         cls.save()
 
     @classmethod
     def reset_guild(cls, guild_id: int) -> None:
         gid = cls._g(guild_id)
         cls.data["participants"][gid] = []
-        cls.data["game"][gid] = {"day": 1, "phase": "day"}
+        cls.data["game"][gid] = {"day": 0, "phase": "day"}
         cls.data["votes"][gid] = {}
         cls.data["voting_open"][gid] = False
         cls.data["gm_vote_message_id"].pop(gid, None)

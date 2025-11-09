@@ -12,7 +12,14 @@ class VoteManagerCog(commands.Cog):
 
     @app_commands.command(name="start_vote", description="投票を開始（雛形）")
     async def start_vote(self, interaction: discord.Interaction):
-        await interaction.response.send_message("🗳️ 投票開始（雛形）", ephemeral=True)
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+        if interaction.guild:
+            _, _, log = await ensure_gm_environment(interaction.guild)
+            await log.send(f"[GM Action] {interaction.user.mention} 投票開始（雛形）")
 
     @app_commands.command(name="close_vote", description="夜の投票を締め切る（以降の投票は無効）")
     async def close_vote(self, interaction: discord.Interaction):
@@ -53,7 +60,13 @@ class VoteManagerCog(commands.Cog):
             except discord.NotFound:
                 msg = await vote_channel.send(text)
                 Storage.set_gm_vote_message(interaction.guild.id, msg.id)
-        await interaction.response.send_message("⛔ 夜の投票を締め切りました", ephemeral=True)
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+        _, _, log = await ensure_gm_environment(interaction.guild)
+        await log.send(f"[GM Action] {interaction.user.mention} 夜の投票を締め切り")
 
 
 async def setup(bot: commands.Bot):
