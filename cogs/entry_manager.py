@@ -973,13 +973,14 @@ async def _disable_old_role_message_ui(guild: discord.Guild, keep_id: int) -> No
                     break
             disp = f"{ho}（{name}）" if name else ho
             if role == "占い":
-                textA = f"天啓：{disp}は「村人」です。"
-                textB = f"天啓：{disp}は「狼」です。"
+                textA = f"天啓：「村人」です。"
+                textB = f"天啓：「人狼」です。"
             elif role == "霊能":
-                textA = f"天啓：昨日死亡した人は「村人」でした。"
-                textB = f"天啓：昨日死亡した人は「人狼」でした。"
+                textA = f"天啓：「村人」です。"
+                textB = f"天啓：「人狼」です。"
             elif role == "狂人":
-                textA = f"あなたは今日、なんだか無性に寿司狼の味方をしなければならない気がしている。"
+                textA = f"天啓：あなたは今日、なんだか無性に寿司狼の味方をしなければならない気がしている。\nあなたは狼陣営です。"
+                textB = f"天啓：あなたは正気を取り戻しました。\n以降あなたは村人陣営の味方です。"
             final = textA if tmpl == "A" else textB
             # 送信先は対象HOの個別チャンネル
             channel = discord.utils.get(interaction.guild.text_channels, name=ho.lower())
