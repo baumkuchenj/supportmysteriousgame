@@ -5,6 +5,7 @@ from discord.ext import commands
 
 from storage import Storage
 from utils.helpers import ensure_gm_environment
+from cogs.entry_manager import _build_role_message_view, _disable_old_role_message_ui
 
 class VoteManagerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -26,6 +27,11 @@ class VoteManagerCog(commands.Cog):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
             return
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
         await Storage.ensure_loaded()
         Storage.set_voting_open(interaction.guild.id, False)
         # GM集計メッセージを更新
@@ -60,11 +66,18 @@ class VoteManagerCog(commands.Cog):
             except discord.NotFound:
                 msg = await vote_channel.send(text)
                 Storage.set_gm_vote_message(interaction.guild.id, msg.id)
-        if not interaction.response.is_done():
+        try:
+            new_msg = await gm_dash.send("役職連絡: 役職/対象/送る内容を選んで送信してください", view=_build_role_message_view(interaction.guild.id))
             try:
-                await interaction.response.defer(ephemeral=True, thinking=False)
+                await _disable_old_role_message_ui(interaction.guild, keep_id=new_msg.id)
             except Exception:
                 pass
+        except Exception:
+            pass
+        try:
+            await interaction.followup.send("✅ 夜の投票を締め切り、役職連絡UIを表示しました", ephemeral=True)
+        except Exception:
+            pass
         _, _, log = await ensure_gm_environment(interaction.guild)
         await log.send(f"[GM Action] {interaction.user.mention} 夜の投票を締め切り")
 
