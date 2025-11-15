@@ -138,6 +138,48 @@ class GameCog(commands.Cog):
         except Exception:
             pass
 
+        # 個別チャンネル（HOチャンネル）へ文面を送信
+        try:
+            parts = Storage.get_participants(guild.id)
+            ho = ""
+            for p in parts:
+                try:
+                    if int(p.get("id", 0)) == int(member.id):
+                        ho = str(p.get("ho") or "").upper()
+                        break
+                except Exception:
+                    continue
+            label_map = {
+                "HO1": "味噌汁",
+                "HO2": "マグロ",
+                "HO3": "ビントロ",
+                "HO4": "茶碗蒸し",
+                "HO5": "サーモン",
+                "HO6": "つぶ貝",
+                "HO7": "鯛",
+                "HO8": "イクラ",
+                "HO9": "ぶり",
+                "HO10": "うどん",
+                "HO11": "ハマチ",
+                "HO12": "イカ",
+                "HO13": "タコ",
+                "HO14": "コハダ",
+            }
+            label = label_map.get(ho, "")
+            if ho:
+                ch = discord.utils.get(guild.text_channels, name=ho.lower())
+                if ch is not None:
+                    body = (
+                        "【あなたは死にました】\n"
+                        "あなたは死にましたが、処刑時の投票以外のすべての能力が使えます。引き続き夜に対象を一人選んでください。昼の会議にも参加可能です。 霊界チャンネルが解放されました。 また、あなたは生前【" + label + "】であったことを思い出しました。"
+                    )
+                    try:
+                        await ch.send(body)
+                    except discord.Forbidden:
+                        pass
+        except Exception:
+            pass
+
     @app_commands.command(name="spirit_reverse_button", description="霊界に逆回転ボタンを表示（1回限り）")
     async def spirit_reverse_button(self, interaction: discord.Interaction):
         if not interaction.guild:
