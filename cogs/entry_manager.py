@@ -272,9 +272,23 @@ class EntryManagerCog(commands.Cog):
         await Storage.ensure_loaded()
         guild = interaction.guild
         # 参加者ロールも用意
+        # 長処理になる可能性があるため、先にdeferして Unknown interaction を回避
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
         await ensure_player_role(guild)
         await _upsert_dashboard_panel(guild)
-        await interaction.response.send_message("✅ 参加者管理パネルを配置しました。", ephemeral=True)
+        try:
+            await interaction.followup.send("✅ 参加者管理パネルを配置しました。", ephemeral=True)
+        except Exception:
+            # 応答が未送信であれば直接送信を試行
+            if not interaction.response.is_done():
+                try:
+                    await interaction.response.send_message("✅ 参加者管理パネルを配置しました。", ephemeral=True)
+                except Exception:
+                    pass
         await _gm_log_interaction(interaction, "参加者管理パネルを設置/更新")
 
     @app_commands.command(name="close_entry", description="参加者募集を締め切り、HO個別ロールとチャンネルを作成")
