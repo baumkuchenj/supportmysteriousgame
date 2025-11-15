@@ -2,14 +2,20 @@
 from __future__ import annotations
 import os
 import json
+import asyncio
+import requests
 from typing import Any, Dict, List, Optional, Union
 
 Json = Dict[str, Any]
 
 
 class Storage:
-    data_file: str = "data.json"
+    data_file: str = os.getenv("DATA_FILE", "data.json")
     _loaded: bool = False
+    _backend: str = os.getenv("STORAGE_BACKEND", "file").lower()
+    _upstash_url: str = os.getenv("UPSTASH_REDIS_REST_URL", "")
+    _upstash_token: str = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+    _upstash_key: str = os.getenv("STORAGE_KEY", "werewolf:data")
 
     data: Json = {
         "participants": {},           # {guild_id: [ {id:int, name:str, ho: Optional[str]} ]}
@@ -26,18 +32,31 @@ class Storage:
     async def ensure_loaded(cls) -> None:
         if cls._loaded:
             return
-        if os.path.exists(cls.data_file):
+        if cls._backend == "upstash" and cls._upstash_url and cls._upstash_token:
             try:
-                with open(cls.data_file, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                for k, v in cls.data.items():
-                    if k not in raw:
-                        raw[k] = v
-                cls.data = raw
+                raw = await cls._kv_get()
+                if not isinstance(raw, dict) or not raw:
+                    cls._fresh()
+                else:
+                    for k, v in cls.data.items():
+                        if k not in raw:
+                            raw[k] = v
+                    cls.data = raw
             except Exception:
                 cls._fresh()
         else:
-            cls._fresh()
+            if os.path.exists(cls.data_file):
+                try:
+                    with open(cls.data_file, "r", encoding="utf-8") as f:
+                        raw = json.load(f)
+                    for k, v in cls.data.items():
+                        if k not in raw:
+                            raw[k] = v
+                    cls.data = raw
+                except Exception:
+                    cls._fresh()
+            else:
+                cls._fresh()
         cls._loaded = True
 
     @classmethod
@@ -48,10 +67,43 @@ class Storage:
     @classmethod
     def save(cls) -> None:
         try:
-            with open(cls.data_file, "w", encoding="utf-8") as f:
-                json.dump(cls.data, f, ensure_ascii=False, indent=2)
+            if cls._backend == "upstash" and cls._upstash_url and cls._upstash_token:
+                try:
+                    json_str = json.dumps(cls.data, ensure_ascii=False)
+                except Exception as e:
+                    print(f"[Storage] serialize failed: {e}")
+                    return
+                try:
+                    headers = {"Authorization": f"Bearer {cls._upstash_token}"}
+                    url = cls._upstash_url.rstrip("/") + f"/set/{cls._upstash_key}"
+                    resp = requests.post(url, headers=headers, json={"value": json_str}, timeout=10)
+                    if resp.status_code >= 300:
+                        print(f"[Storage] kv set failed: {resp.status_code} {resp.text}")
+                except Exception as e:
+                    print(f"[Storage] kv save failed: {e}")
+            else:
+                with open(cls.data_file, "w", encoding="utf-8") as f:
+                    json.dump(cls.data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[Storage] save failed: {e}")
+
+    @classmethod
+    async def _kv_get(cls) -> Json:
+        def _do() -> Json:
+            headers = {"Authorization": f"Bearer {cls._upstash_token}"}
+            url = cls._upstash_url.rstrip("/") + f"/get/{cls._upstash_key}"
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code >= 300:
+                return {}
+            try:
+                payload = resp.json()
+                val = payload.get("result")
+                if not val:
+                    return {}
+                return json.loads(val)
+            except Exception:
+                return {}
+        return await asyncio.to_thread(_do)
 
     # ---------- helpers ----------
     @classmethod

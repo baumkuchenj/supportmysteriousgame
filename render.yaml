@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: werewolf-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: APPLICATION_ID
+        sync: false
+      - key: STORAGE_BACKEND
+        value: upstash
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: STORAGE_KEY
+        value: werewolf:data
+      - key: DEBUG_MODE
+        value: "false"

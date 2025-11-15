@@ -6,12 +6,14 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
+from aiohttp import web
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 APP_ID = os.getenv("APPLICATION_ID")
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 GUILD_ID = os.getenv("GUILD_ID")
+PORT = int(os.getenv("PORT", "10000"))
 
 if not TOKEN or not APP_ID:
     raise RuntimeError(".env の DISCORD_TOKEN / APPLICATION_ID を設定してください")
@@ -76,10 +78,34 @@ async def run_bot():
             break
 
 
+async def run_http_server():
+    async def health(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/healthz", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    log.info(f"🌐 HTTP server listening on :{PORT}")
+    await site.start()
+    # Keep running
+    while True:
+        await asyncio.sleep(3600)
+
+
+async def main():
+    await asyncio.gather(
+        run_bot(),
+        run_http_server(),
+    )
+
+
 if __name__ == "__main__":
     if os.name == "nt":
         try:
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except Exception:
             pass
-    asyncio.run(run_bot())
+    asyncio.run(main())
