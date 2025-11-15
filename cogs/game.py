@@ -138,6 +138,70 @@ class GameCog(commands.Cog):
         except Exception:
             pass
 
+    @app_commands.command(name="spirit_reverse_button", description="霊界に逆回転ボタンを表示（1回限り）")
+    async def spirit_reverse_button(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        await Storage.ensure_loaded()
+        gid = interaction.guild.id
+        channel = interaction.channel
+        # 霊界チャンネル限定
+        if not isinstance(channel, discord.TextChannel) or channel.name != "霊界":
+            await interaction.response.send_message("霊界チャンネルで実行してください", ephemeral=True)
+            return
+        used = Storage.is_spirit_reverse_used(gid)
+
+        class ReverseButton(discord.ui.Button):
+            def __init__(self, guild_id: int):
+                label = "逆回転"
+                super().__init__(label=label, style=discord.ButtonStyle.danger)
+                self._gid = guild_id
+                if Storage.is_spirit_reverse_used(guild_id):
+                    self.disabled = True
+
+            async def callback(self, interaction: discord.Interaction):
+                if Storage.is_spirit_reverse_used(self._gid):
+                    await interaction.response.send_message("このボタンは既に使用されています", ephemeral=True)
+                    return
+                Storage.set_spirit_reverse_used(self._gid, True)
+                # ボタンを無効化して編集
+                v = discord.ui.View(timeout=None)
+                b = ReverseButton(self._gid)
+                b.disabled = True
+                v.add_item(b)
+                try:
+                    await interaction.message.edit(view=v)
+                except Exception:
+                    pass
+                # 霊界チャンネルへ告知
+                try:
+                    await interaction.channel.send("逆回転、開始！！")
+                except Exception:
+                    pass
+                # ログ
+                try:
+                    _, _, log = await ensure_gm_environment(interaction.guild)
+                    await log.send(f"[GM Action] {interaction.user.mention} 霊界で逆回転を実行")
+                except Exception:
+                    pass
+                # 応答（エフェメラル）
+                try:
+                    await interaction.response.send_message("✅ 実行しました", ephemeral=True)
+                except Exception:
+                    pass
+
+        view = discord.ui.View(timeout=None)
+        view.add_item(ReverseButton(gid))
+        try:
+            await channel.send("🌀 霊界：逆回転ボタン", view=view)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("送信に失敗しました", ephemeral=True)
+            return
+        if not interaction.response.is_done():
+            await interaction.response.send_message("✅ 逆回転ボタンを設置しました", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(GameCog(bot))

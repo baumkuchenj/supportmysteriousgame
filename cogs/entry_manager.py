@@ -6,7 +6,7 @@ from typing import List
 
 from config import ENTRY_TITLE, ENTRY_DESCRIPTION, PRIVATE_CATEGORY_NAME
 from storage import Storage
-from utils.helpers import ensure_gm_environment, ensure_player_role
+from utils.helpers import ensure_gm_environment, ensure_player_role, is_member_spirit
 
 
 def build_participants_embed(guild_id: int) -> discord.Embed:
@@ -332,6 +332,64 @@ class EntryManagerCog(commands.Cog):
         await dash.send("🧩 参加者管理パネル", embed=build_participants_embed(guild.id), view=EntryManageView(guild))
         await interaction.response.send_message(f"🔄 playerロールから参加者を同期しました（{len(participants)}名）", ephemeral=True)
 
+    @app_commands.command(name="send_intro_messages", description="HO個別チャンネルに役職説明を送信（HO1/4/10は寿司狼文、他は一般文）。任意で特定HOに上書き送信可")
+    @app_commands.describe(target_ho="特定のHOにのみ送る（例: HO3）", text="そのHOに送るカスタム文面（未指定ならデフォルト文）")
+    async def send_intro_messages(self, interaction: discord.Interaction, target_ho: str | None = None, text: str | None = None):
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        guild = interaction.guild
+        await Storage.ensure_loaded()
+        parts = Storage.get_participants(guild.id)
+        wolf_hos = {"HO1", "HO4", "HO10"}
+        wolf_text = (
+            "あなたは【寿司狼】です。\n"
+            "あなたはこの回転寿司屋の安っぽいレーンで回されている寿司たちに、かつて海を自由に泳いでいた魚としての誇りを思い出させるため、襲撃を行います。\n"
+            "能力:毎晩一人を指名し、襲撃を行う\n"
+            "尚、この回転寿司屋では、役職は回転しており、\n"
+            "寿司たちは記憶を失ったまま、毎晩誰かしら一人を指名している\n"
+            "もしかしたらあなたにも、役職が回ってくるかもしれない\n"
+            "また、ほかにもあなたの存在を脅かす寿司がいるかもしれない"
+        )
+        other_text = (
+            "あなたは何も思い出せない。\n"
+            "能力:毎晩一人を指名する\n"
+            "※死んだ人は指定できない"
+        )
+
+        # 対象HOの決定
+        targets = []
+        if target_ho:
+            th = target_ho.upper()
+            for p in parts:
+                if str(p.get("ho") or "").upper() == th:
+                    targets.append(p)
+                    break
+        else:
+            targets = [p for p in parts if p.get("ho")]
+
+        sent = []
+        for p in targets:
+            ho = str(p.get("ho") or "").upper()
+            if not ho:
+                continue
+            member = guild.get_member(int(p.get("id", 0)))
+            # 霊界は対象外
+            if member and is_member_spirit(member):
+                continue
+            channel = discord.utils.get(guild.text_channels, name=ho.lower())
+            if channel is None:
+                continue
+            body = text if (text and target_ho) else (wolf_text if ho in wolf_hos else other_text)
+            try:
+                await channel.send(body)
+                sent.append(ho)
+            except discord.Forbidden:
+                pass
+        if not interaction.response.is_done():
+            await interaction.response.send_message(f"📨 送信済み: {', '.join(sorted(sent)) if sent else '(なし)'}", ephemeral=True)
+        await _gm_log_interaction(interaction, f"役職説明を送信（対象: {', '.join(sorted(sent)) if sent else '(なし)'}）")
+
 
 # ===== 内部アクション =====
 async def _do_close_entry(interaction: discord.Interaction):
@@ -447,10 +505,14 @@ async def _do_night_phase(interaction: discord.Interaction):
         ho = str(p.get("ho") or "").upper()
         if not ho:
             continue
+        # 霊界は夜UIの配布対象外
+        member = guild.get_member(int(p.get("id", 0)))
+        if member and is_member_spirit(member):
+            continue
         channel = discord.utils.get(guild.text_channels, name=ho.lower())
         if channel is None:
             continue
-        view = _build_vote_view(guild.id, ho)
+        view = _build_vote_view(guild, ho)
         await channel.send("誰か一人を選択してください", view=view)
 
 
@@ -485,12 +547,17 @@ async def _do_close_vote(interaction: discord.Interaction):
     await _gm_log_interaction(interaction, "夜の投票を締め切り。集計確定＆役職連絡UIを表示")
 
 
-def _build_vote_view(guild_id: int, voter_ho: str) -> discord.ui.View:
+def _build_vote_view(guild: discord.Guild, voter_ho: str) -> discord.ui.View:
+    guild_id = guild.id
     parts = Storage.get_participants(guild_id)
     options = []
     for p in parts:
         ho = p.get("ho")
         if not ho or ho == voter_ho:
+            continue
+        # 霊界は投票先の対象外
+        member = guild.get_member(int(p.get("id", 0)))
+        if member and is_member_spirit(member):
             continue
         label = f"{ho} {p.get('name','')}"
         options.append(discord.SelectOption(label=label, value=str(ho)))
@@ -562,7 +629,16 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
         "狂人",
     ]
     parts = Storage.get_participants(guild_id)
-    ho_options = [discord.SelectOption(label=f"{p.get('ho')} {p.get('name','')}", value=str(p.get('ho'))) for p in parts if p.get("ho")]
+    wolf_hos = {"HO1", "HO4", "HO10"}
+    ho_options = []
+    for p in parts:
+        if not p.get("ho"):
+            continue
+        ho = str(p.get("ho"))
+        name = str(p.get("name", ""))
+        wolf_tag = "（人狼）" if ho in wolf_hos else ""
+        label = f"{ho} {name}{wolf_tag}".strip()
+        ho_options.append(discord.SelectOption(label=label, value=ho))
     if not ho_options:
         ho_options = [discord.SelectOption(label="対象なし", value="none")]
 
@@ -637,9 +713,14 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
             if texts:
                 a, b = texts
                 preview = f"A: {a}\nB: {b}"
+            # GMが識別できるようにHO1/HO4/HO10は（人狼）をサマリー表示に付与
+            if isinstance(dest, str) and dest in {"HO1", "HO4", "HO10"}:
+                dest_display = f"{dest}（人狼）"
+            else:
+                dest_display = dest
             return (
                 "役職連絡: 役職/対象/送る内容を選んで送信してください\n"
-                f"- 送信先HO: {dest}\n"
+                f"- 送信先HO: {dest_display}\n"
                 f"- 役職: {role}\n"
                 f"- 対象HO: {target}\n"
                 f"- 選択: {choice}\n"

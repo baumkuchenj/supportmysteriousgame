@@ -4,7 +4,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from storage import Storage
-from utils.helpers import ensure_gm_environment
+from utils.helpers import ensure_gm_environment, is_member_spirit
 
 
 class DayProgressCog(commands.Cog):
@@ -70,6 +70,10 @@ class DayProgressCog(commands.Cog):
             ho = str(p.get("ho") or "").upper()
             if not ho:
                 continue
+            # 霊界は夜UIの配布対象外
+            member = guild.get_member(int(p.get("id", 0)))
+            if member and is_member_spirit(member):
+                continue
             channel = discord.utils.get(guild.text_channels, name=ho.lower())
             if channel is None:
                 continue
@@ -109,6 +113,9 @@ class DayProgressCog(commands.Cog):
             ho = p.get("ho")
             if not ho or ho == voter_ho:
                 continue
+            # 霊界は投票先の対象外
+            # interaction.guild がないのでメンバー取得は実行時に行えないため、
+            # ここでは候補構築時点では除外できないケースがある。送信側で除外済み。
             label = f"{ho} {p.get('name','')}"
             options.append(discord.SelectOption(label=label, value=str(ho)))
         if not options:
@@ -139,6 +146,18 @@ class DayProgressCog(commands.Cog):
                 if not target or target == "none":
                     await interaction.response.send_message("投票先を選択してください", ephemeral=True)
                     return
+                # 霊界は投票対象外のため最終チェック（もし存在するなら弾く）
+                if interaction.guild:
+                    # target は HO名。対応メンバーが霊界なら拒否
+                    parts_local = Storage.get_participants(interaction.guild.id)
+                    member = None
+                    for pp in parts_local:
+                        if str(pp.get("ho") or "").upper() == str(target).upper():
+                            member = interaction.guild.get_member(int(pp.get("id", 0)))
+                            break
+                    if member and is_member_spirit(member):
+                        await interaction.response.send_message("その対象は指定できません", ephemeral=True)
+                        return
                 Storage.set_vote(guild_id, voter_ho, target)
                 # GM集計メッセージ更新
                 await parent._update_gm_tally(interaction.guild)

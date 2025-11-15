@@ -18,6 +18,7 @@ class Storage:
         "voting_open": {},            # {guild_id: bool}
         "gm_vote_message_id": {},     # {guild_id: int}
         "dashboard_message_id": {},   # {guild_id: int}
+        "spirit_reverse_used": {},    # {guild_id: bool}
     }
 
     # ---------- IO ----------
@@ -41,7 +42,7 @@ class Storage:
 
     @classmethod
     def _fresh(cls) -> None:
-        cls.data = {"participants": {}, "game": {}, "votes": {}, "voting_open": {}, "gm_vote_message_id": {}, "dashboard_message_id": {}}
+        cls.data = {"participants": {}, "game": {}, "votes": {}, "voting_open": {}, "gm_vote_message_id": {}, "dashboard_message_id": {}, "spirit_reverse_used": {}}
         cls.save()
 
     @classmethod
@@ -125,6 +126,7 @@ class Storage:
         cls.data["voting_open"][gid] = False
         cls.data["gm_vote_message_id"].pop(gid, None)
         cls.data["dashboard_message_id"].pop(gid, None)
+        cls.data["spirit_reverse_used"][gid] = False
         cls.save()
 
     # ---------- night vote ----------
@@ -173,3 +175,15 @@ class Storage:
     @classmethod
     def get_dashboard_message(cls, guild_id: int) -> Optional[int]:
         return cls.data["dashboard_message_id"].get(cls._g(guild_id))
+
+    # ---------- spirit reverse ----------
+    @classmethod
+    def is_spirit_reverse_used(cls, guild_id: int) -> bool:
+        return bool(cls.data.get("spirit_reverse_used", {}).get(cls._g(guild_id), False))
+
+    @classmethod
+    def set_spirit_reverse_used(cls, guild_id: int, used: bool) -> None:
+        gid = cls._g(guild_id)
+        cls.data.setdefault("spirit_reverse_used", {})
+        cls.data["spirit_reverse_used"][gid] = bool(used)
+        cls.save()

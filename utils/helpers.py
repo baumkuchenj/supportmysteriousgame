@@ -61,3 +61,10 @@ async def ensure_player_role(guild: discord.Guild) -> discord.Role:
             # フォールバック: @everyone を返す（機能制限）
             role = discord.utils.get(guild.roles, name='@everyone')
     return role
+
+
+def is_member_spirit(member: discord.Member) -> bool:
+    for r in member.roles:
+        if str(r.name) == "霊界":
+            return True
+    return False
