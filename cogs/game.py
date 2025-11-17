@@ -79,6 +79,47 @@ class GameCog(commands.Cog):
         except Exception:
             pass
 
+    @app_commands.command(name="sync_commands", description="スラッシュコマンドを手動同期（既定: このギルドのみ/高速）")
+    @app_commands.describe(global_sync="Trueでグローバル同期（反映に時間がかかる）")
+    async def sync_commands(self, interaction: discord.Interaction, global_sync: bool = False):
+        # ギルド外では権限確認が難しいためギルド必須
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        guild = interaction.guild
+        # 先に静かにdefer
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+        # 権限チェック: GMロール or Manage Guild
+        gm_role = discord.utils.get(guild.roles, name=GM_ROLE_NAME)
+        perms_ok = interaction.user.guild_permissions.manage_guild
+        if gm_role and gm_role in getattr(interaction.user, 'roles', []):
+            perms_ok = True
+        if not perms_ok:
+            try:
+                await interaction.followup.send("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
+            except Exception:
+                pass
+            return
+        # 同期実行
+        try:
+            if global_sync:
+                synced = await self.bot.tree.sync()
+                msg = f"🌍 グローバル同期完了: {len(synced)} 件（反映まで時間がかかる場合があります）"
+            else:
+                guild_obj = discord.Object(id=int(guild.id))
+                synced = await self.bot.tree.sync(guild=guild_obj)
+                msg = f"🧪 ギルド同期完了: {len(synced)} 件（このサーバーに即時反映）"
+            await interaction.followup.send(msg, ephemeral=True)
+        except Exception as e:
+            try:
+                await interaction.followup.send(f"❌ 同期に失敗しました: {e}", ephemeral=True)
+            except Exception:
+                pass
+
     @app_commands.command(name="add_spirit", description="死亡者を霊界に移動（役職\"霊界\"付与＆霊界チャンネル作成/入室）")
     async def add_spirit(self, interaction: discord.Interaction, member: discord.Member):
         if not interaction.guild:
