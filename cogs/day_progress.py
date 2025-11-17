@@ -42,12 +42,8 @@ class DayProgressCog(commands.Cog):
         Storage.ensure_game(guild.id)
         Storage.data["game"][str(guild.id)]["phase"] = "night"
         
-        # 準備: 参加者とHO一覧
-        participants = Storage.get_participants(guild.id)
-        ho_list = [p.get("ho") for p in participants if p.get("ho")]
-        # 投票初期化とオープン
-        Storage.init_votes(guild.id, ho_list)
-        Storage.set_voting_open(guild.id, True)
+        # 夜投票は行わない。夜アクションのみに切替
+        Storage.clear_night_actions(guild.id)
         Storage.save()
 
         # GM集計チャンネル (vote_night) をGMカテゴリに用意し、集計メッセージを送信
@@ -59,27 +55,10 @@ class DayProgressCog(commands.Cog):
         if vote_channel is None:
             vote_channel = await guild.create_text_channel("vote_night", category=gm_category)
 
-        # 初期集計の投稿
+        # 初期集計の投稿（夜アクションのみ）
         tally = self._build_tally_text(guild.id)
         gm_msg = await vote_channel.send(tally)
         Storage.set_gm_vote_message(guild.id, gm_msg.id)
-
-        # 各HOチャンネルに投票UIを設置
-        # 候補は「自分以外のHO」
-        for p in participants:
-            ho = str(p.get("ho") or "").upper()
-            if not ho:
-                continue
-            # 霊界は夜UIの配布対象外
-            member = guild.get_member(int(p.get("id", 0)))
-            if member and is_member_spirit(member):
-                continue
-            channel = discord.utils.get(guild.text_channels, name=ho.lower())
-            if channel is None:
-                continue
-            # ビュー生成
-            view = self._build_vote_view(guild.id, ho)
-            await channel.send("誰か一人を選択してください", view=view)
 
         # GM操作は表示せず、gm-logへ記載
         if not interaction.response.is_done():
@@ -89,21 +68,25 @@ class DayProgressCog(commands.Cog):
                 pass
         from utils.helpers import ensure_gm_environment as _egm
         _, _, log = await _egm(guild)
-        await log.send(f"[GM Action] {interaction.user.mention} 夜フェーズへ移行し投票UIを配置")
+        await log.send(f"[GM Action] {interaction.user.mention} 夜フェーズへ移行（夜投票は行わない）")
 
     # ===== 内部ユーティリティ =====
     def _build_tally_text(self, guild_id: int) -> str:
-        votes = Storage.get_votes(guild_id)
         parts = Storage.get_participants(guild_id)
         name_by_ho = {str(p.get("ho")): p.get("name") for p in parts if p.get("ho")}
-        lines = ["🗳️ 夜の投票状況"]
-        for ho in sorted(name_by_ho.keys()):
-            target = votes.get(ho)
-            if target:
-                tname = name_by_ho.get(target, target)
-                lines.append(f"{ho} → {target} ({tname})")
-            else:
-                lines.append(f"{ho} → 未投票")
+        lines = ["🌓 夜の行動状況"]
+        # 占い/狩人の夜アクション状況
+        na = Storage.get_night_actions(guild_id)
+        for role in ("占い", "狩人"):
+            role_map = na.get(role, {})
+            for voter_ho, target in sorted(role_map.items()):
+                if not voter_ho:
+                    continue
+                if target:
+                    tname = name_by_ho.get(target, target)
+                    lines.append(f"{role}: {voter_ho} → {target} ({tname})")
+                else:
+                    lines.append(f"{role}: {voter_ho} → 未選択")
         return "\n".join(lines)
 
     def _build_vote_view(self, guild_id: int, voter_ho: str) -> discord.ui.View:

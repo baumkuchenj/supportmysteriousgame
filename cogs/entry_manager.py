@@ -152,10 +152,9 @@ def _has_ho_assigned(guild_id: int) -> bool:
 
 
 def _build_tally_text(guild_id: int) -> str:
-    votes = Storage.get_votes(guild_id)
     parts = Storage.get_participants(guild_id)
     name_by_ho = {str(p.get("ho")): p.get("name") for p in parts if p.get("ho")}
-    lines = ["🗳️ 夜の投票状況"]
+    lines = ["🌓 夜の行動状況"]
     # 占い/狩人の夜アクション状況
     na = Storage.get_night_actions(guild_id)
     for role in ("占い", "狩人"):
@@ -168,13 +167,6 @@ def _build_tally_text(guild_id: int) -> str:
                 lines.append(f"{role}: {voter_ho} → {target} ({tname})")
             else:
                 lines.append(f"{role}: {voter_ho} → 未選択")
-    for ho in sorted(name_by_ho.keys()):
-        target = votes.get(ho)
-        if target:
-            tname = name_by_ho.get(target, target)
-            lines.append(f"{ho} → {target} ({tname})")
-        else:
-            lines.append(f"{ho} → 未投票")
     return "\n".join(lines)
 
 
@@ -219,10 +211,9 @@ class GMFlowButton(discord.ui.Button):
         # 2) フェーズで分岐
         Storage.ensure_game(gid)
         phase = Storage.data["game"][str(gid)]["phase"]
-        voting_open = Storage.is_voting_open(gid)
         day = Storage.data["game"][str(gid)]["day"]
         if phase == "night":
-            return "投票を締め切る" if voting_open else "翌日に進む"
+            return "翌日に進む"
         # phase == day
         if day == 1:
             return "翌日に進む"
@@ -245,8 +236,6 @@ class GMFlowButton(discord.ui.Button):
             await _do_next_day(interaction)
         elif label == "夜に移行する":
             await _do_night_phase(interaction)
-        elif label == "投票を締め切る":
-            await _do_close_vote(interaction)
         # 再掲（既存メッセージを編集 or 新規）
         await _upsert_dashboard_panel(interaction.guild)
         try:
@@ -324,7 +313,10 @@ class EntryManagerCog(commands.Cog):
                     pass
             # vote_night 集計メッセージも復旧（存在する場合）
             try:
-                if Storage.get_gm_vote_message(guild.id) or Storage.get_votes(guild.id):
+                # 夜投票は行わないため、night_actions または既存メッセージIDがあれば復旧
+                has_msg = bool(Storage.get_gm_vote_message(guild.id))
+                has_actions = bool(Storage.get_night_actions(guild.id))
+                if has_msg or has_actions:
                     await _upsert_vote_tally(guild)
             except Exception:
                 pass
@@ -506,11 +498,12 @@ async def _do_night_phase(interaction: discord.Interaction):
     # 既存の投票データは初期化し、night_actions もクリア
     parts = Storage.get_participants(guild.id)
     ho_list = [p.get("ho") for p in parts if p.get("ho")]
-    Storage.init_votes(guild.id, ho_list)
-    Storage.set_voting_open(guild.id, True)
+    # 夜投票は完全停止
+    # Storage.init_votes(guild.id, ho_list)
+    # Storage.set_voting_open(guild.id, True)
     Storage.clear_night_actions(guild.id)
     Storage.save()
-    await _gm_log_interaction(interaction, "夜フェーズに移行し投票を開始")
+    await _gm_log_interaction(interaction, "夜フェーズに移行（夜投票は行わない）")
     # GM tally message
     _, gm_dash, _ = await ensure_gm_environment(guild)
     gm_category = gm_dash.category
@@ -527,6 +520,12 @@ async def _do_night_phase(interaction: discord.Interaction):
     text = _build_tally_text(guild.id)
     msg = await vote_channel.send(text)
     Storage.set_gm_vote_message(guild.id, msg.id)
+    # 夜開始時に役職連絡UIをダッシュボードに掲示（過去UIは無効化）
+    new_msg = await gm_dash.send("役職連絡: 役職/対象/送る内容を選んで送信してください", view=_build_role_message_view(guild.id))
+    try:
+        await _disable_old_role_message_ui(guild, keep_id=new_msg.id)
+    except Exception:
+        pass
 
 
 async def _do_close_vote(interaction: discord.Interaction):
@@ -561,78 +560,8 @@ async def _do_close_vote(interaction: discord.Interaction):
 
 
 def _build_vote_view(guild: discord.Guild, voter_ho: str) -> discord.ui.View:
-    guild_id = guild.id
-    parts = Storage.get_participants(guild_id)
-    options = []
-    for p in parts:
-        ho = p.get("ho")
-        if not ho or ho == voter_ho:
-            continue
-        # 霊界は投票先の対象外
-        member = guild.get_member(int(p.get("id", 0)))
-        if member and is_member_spirit(member):
-            continue
-        label = f"{ho} {p.get('name','')}"
-        options.append(discord.SelectOption(label=label, value=str(ho)))
-    if not options:
-        options = [discord.SelectOption(label="候補なし", value="none")]
-
-    class _Select(discord.ui.Select):
-        def __init__(self):
-            super().__init__(placeholder="投票先を選択", min_values=1, max_values=1, options=options)
-            self._selected = None
-
-        async def callback(self, interaction: discord.Interaction):
-            self._selected = self.values[0]
-            await interaction.response.send_message("✅ 選択を一時保存しました。送信で確定します。", ephemeral=True)
-
-    class _Submit(discord.ui.Button):
-        def __init__(self, select: _Select):
-            super().__init__(label="送信", style=discord.ButtonStyle.primary)
-            self._select = select
-
-        async def callback(self, interaction: discord.Interaction):
-            if not Storage.is_voting_open(guild_id):
-                await interaction.response.send_message("投票は締め切られています", ephemeral=True)
-                return
-            target = self._select._selected
-            if not target or target == "none":
-                await interaction.response.send_message("投票先を選択してください", ephemeral=True)
-                return
-            Storage.set_vote(guild_id, voter_ho, target)
-            # Update GM tally
-            # Find GM category and msg
-            # This mirrors DayProgress tally updater for simplicity
-            # (軽量のためここでは再利用)
-            # NOTE: interaction.guild is available here
-            from utils.helpers import ensure_gm_environment as _egm
-            gm_role, gm_dash, _ = await _egm(interaction.guild)
-            gm_category = gm_dash.category
-            vote_channel = None
-            if gm_category:
-                vote_channel = discord.utils.get(gm_category.text_channels, name="vote_night")
-            if vote_channel is None:
-                vote_channel = await interaction.guild.create_text_channel("vote_night", category=gm_category)
-            text = _build_tally_text(guild_id)
-            try:
-                msg_id = Storage.get_gm_vote_message(interaction.guild.id)
-                if msg_id:
-                    msg = await vote_channel.fetch_message(msg_id)
-                    await msg.edit(content=text)
-                else:
-                    msg = await vote_channel.send(text)
-                    Storage.set_gm_vote_message(interaction.guild.id, msg.id)
-            except discord.NotFound:
-                msg = await vote_channel.send(text)
-                Storage.set_gm_vote_message(interaction.guild.id, msg.id)
-            await interaction.response.send_message("🗳️ 投票を受け付けました", ephemeral=True)
-            await _gm_log_interaction(interaction, f"投票: {voter_ho} → {target}")
-
-    view = discord.ui.View(timeout=None)
-    select = _Select()
-    view.add_item(select)
-    view.add_item(_Submit(select))
-    return view
+    # 夜投票は行わないため未使用
+    return discord.ui.View(timeout=None)
 
 
 def _build_role_message_view(guild_id: int) -> discord.ui.View:
@@ -670,8 +599,6 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
             self.nextday_button = self.NextDayButton(self)
             # 夜に移行するボタンは最初は表示しない（翌日に進む後に表示）
             self.night_button = self.NightPhaseButton(self)
-            # 投票を締め切るボタンは夜移行後に表示
-            self.closevote_button = self.CloseVoteButton(self)
             self.add_item(self.dest_select)
             self.add_item(self.role_select)
             self.add_item(self.template_select)
@@ -865,35 +792,14 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
                 if hasattr(pv, 'nextday_button') and pv.nextday_button:
                     pv.nextday_button.disabled = True
                 # まだ追加していなければ「投票を締め切る」ボタンを追加
-                if pv and pv.closevote_button not in pv.children:
-                    pv.add_item(pv.closevote_button)
+                # 夜投票は行わないため追加しない
                 # メッセージ更新（ボタン群は無効化された状態で維持）
                 try:
                     await interaction.message.edit(content=pv._summary_text(), view=pv)
                 except Exception:
                     pass
 
-        class CloseVoteButton(discord.ui.Button):
-            def __init__(self, parent: 'RoleMessageView'):
-                super().__init__(label="投票を締め切る", style=discord.ButtonStyle.danger, custom_id="rolemsg_close")
-
-            async def callback(self, interaction: discord.Interaction):
-                # 投票締切処理
-                await _do_close_vote(interaction)
-                # 応答はdeferのみ（ダッシュボードに通知は出さない）
-                if not interaction.response.is_done():
-                    try:
-                        await interaction.response.defer(ephemeral=True)
-                    except Exception:
-                        pass
-                # 自身を無効化（再度押せないように）
-                pv: 'RoleMessageView' = self.view
-                self.disabled = True
-                # メッセージ更新
-                try:
-                    await interaction.message.edit(content=pv._summary_text(), view=pv)
-                except Exception:
-                    pass
+        
 
     return RoleMessageView()
 
