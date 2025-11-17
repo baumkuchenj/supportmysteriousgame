@@ -320,9 +320,10 @@ class EntryManagerCog(commands.Cog):
                     await _upsert_vote_tally(guild)
             except Exception:
                 pass
-            # 永続コンポーネント（役職連絡UI）のViewを再登録
+            # 永続コンポーネントのViewを再登録
             try:
-                self.bot.add_view(_build_role_message_view(guild.id))
+                self.bot.add_view(_build_role_send_phase_view(guild.id))
+                self.bot.add_view(_build_role_action_phase_view(guild.id))
             except Exception:
                 pass
 
@@ -520,8 +521,8 @@ async def _do_night_phase(interaction: discord.Interaction):
     text = _build_tally_text(guild.id)
     msg = await vote_channel.send(text)
     Storage.set_gm_vote_message(guild.id, msg.id)
-    # 夜開始時に役職連絡UIをダッシュボードに掲示（過去UIは無効化）
-    new_msg = await gm_dash.send("役職連絡: 役職/対象/送る内容を選んで送信してください", view=_build_role_message_view(guild.id))
+    # 夜開始時に役職送信フェーズUIをダッシュボードに掲示（過去UIは無効化）
+    new_msg = await gm_dash.send("役職送信フェーズ: 役職/対象/送る内容を選んで送信してください", view=_build_role_send_phase_view(guild.id))
     try:
         await _disable_old_role_message_ui(guild, keep_id=new_msg.id)
     except Exception:
@@ -551,7 +552,8 @@ async def _do_close_vote(interaction: discord.Interaction):
             msg = await vote_channel.send(text)
             Storage.set_gm_vote_message(guild.id, msg.id)
     # 役職連絡用のUIは gm-dashboard に掲載（新規を最新とし、過去UIは一括無効化）
-    new_msg = await gm_dash.send("役職連絡: 役職/対象/送る内容を選んで送信してください", view=_build_role_message_view(guild.id))
+    # 夜投票は使わないため、役職行動フェーズUIを提示
+    new_msg = await gm_dash.send("役職行動フェーズ: 役職/対象/送る内容を選んで送信してください\n- 送信ボタンと翌日に進むボタンが利用可能です", view=_build_role_action_phase_view(guild.id))
     try:
         await _disable_old_role_message_ui(guild, keep_id=new_msg.id)
     except Exception:
@@ -564,14 +566,8 @@ def _build_vote_view(guild: discord.Guild, voter_ho: str) -> discord.ui.View:
     return discord.ui.View(timeout=None)
 
 
-def _build_role_message_view(guild_id: int) -> discord.ui.View:
-    roles = [
-        "占い",
-        "占い結果",
-        "狩人",
-        "霊能",
-        "狂人",
-    ]
+def _build_role_send_phase_view(guild_id: int) -> discord.ui.View:
+    roles = ["占い", "狩人"]
     parts = Storage.get_participants(guild_id)
     wolf_hos = {"HO1", "HO4", "HO10"}
     ho_options = []
@@ -586,7 +582,7 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
     if not ho_options:
         ho_options = [discord.SelectOption(label="対象なし", value="none")]
 
-    class RoleMessageView(discord.ui.View):
+    class RoleSendPhaseView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=None)
             self.selected_dest_ho: str | None = None
@@ -596,14 +592,12 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
             self.dest_select = self.DestinationSelect(self)
             self.template_select = self.TemplateSelect(self)
             self.send_button = self.SendButton(self)
-            self.nextday_button = self.NextDayButton(self)
-            # 夜に移行するボタンは最初は表示しない（翌日に進む後に表示）
-            self.night_button = self.NightPhaseButton(self)
+            self.to_action_button = self.ToActionButton(self)
             self.add_item(self.dest_select)
             self.add_item(self.role_select)
             self.add_item(self.template_select)
             self.add_item(self.send_button)
-            self.add_item(self.nextday_button)
+            self.add_item(self.to_action_button)
 
         def _compute_texts(self) -> tuple[str, str] | None:
             role = self.selected_role
@@ -667,7 +661,7 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
             else:
                 dest_display = dest
             return (
-                "役職連絡: 役職/対象/送る内容を選んで送信してください\n"
+                "役職送信フェーズ: 役職/対象/送る内容を選んで送信してください\n"
                 f"- 送信先HO: {dest_display}\n"
                 f"- 役職: {role}\n"
                 f"- 対象HO: {target}\n"
@@ -676,44 +670,44 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
             )
 
         class RoleSelect(discord.ui.Select):
-            def __init__(self, parent: 'RoleMessageView'):
+            def __init__(self, parent: 'RoleSendPhaseView'):
                 super().__init__(placeholder="役職を選択", min_values=1, max_values=1,
                                  options=[discord.SelectOption(label=r, value=r) for r in roles],
                                  custom_id="rolemsg_role")
 
             async def callback(self, interaction: discord.Interaction):
-                pv: 'RoleMessageView' = self.view  # parent view provided by discord.py
+                pv: 'RoleSendPhaseView' = self.view  # parent view provided by discord.py
                 pv.selected_role = self.values[0]
                 await pv._refresh_template_options(interaction)
 
         class DestinationSelect(discord.ui.Select):
-            def __init__(self, parent: 'RoleMessageView'):
+            def __init__(self, parent: 'RoleSendPhaseView'):
                 super().__init__(placeholder="送信先HOの個別チャンネルを選択", min_values=1, max_values=1, options=ho_options,
                                  custom_id="rolemsg_dest")
 
             async def callback(self, interaction: discord.Interaction):
-                pv: 'RoleMessageView' = self.view
+                pv: 'RoleSendPhaseView' = self.view
                 pv.selected_dest_ho = self.values[0]
                 await interaction.response.edit_message(content=pv._summary_text(), view=pv)
 
 
         class TemplateSelect(discord.ui.Select):
-            def __init__(self, parent: 'RoleMessageView'):
+            def __init__(self, parent: 'RoleSendPhaseView'):
                 super().__init__(placeholder="送る内容を選択 (A/B)", min_values=1, max_values=1,
                                  options=[discord.SelectOption(label="役職と対象を先に選択してください", value="none")],
                                  custom_id="rolemsg_tmpl")
 
             async def callback(self, interaction: discord.Interaction):
-                pv: 'RoleMessageView' = self.view
+                pv: 'RoleSendPhaseView' = self.view
                 # 本文にサマリーを反映（ダッシュボードのメッセージを編集）
                 await interaction.response.edit_message(content=pv._summary_text(), view=pv)
 
         class SendButton(discord.ui.Button):
-            def __init__(self, parent: 'RoleMessageView'):
+            def __init__(self, parent: 'RoleSendPhaseView'):
                 super().__init__(label="送信", style=discord.ButtonStyle.success, custom_id="rolemsg_send")
 
             async def callback(self, interaction: discord.Interaction):
-                pv: 'RoleMessageView' = self.view
+                pv: 'RoleSendPhaseView' = self.view
                 role = pv.selected_role
                 dest = pv.selected_dest_ho
                 if not role or not dest or dest == "none" or not pv.template_select.values:
@@ -733,12 +727,8 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
                     if not interaction.response.is_done():
                         await interaction.response.edit_message(content=pv._summary_text(), view=pv)
                     return
-                # 占い/狩人にはHOチャンネルに選択UIを付けて送信
-                if role in {"占い", "狩人"}:
-                    view = _build_action_view(interaction.guild, role, str(dest))
-                    await channel.send(text, view=view)
-                else:
-                    await channel.send(text)
+                view = _build_action_view(interaction.guild, role, str(dest))
+                await channel.send(text, view=view)
                 # 応答はdeferのみ（ダッシュボードに通知は出さない）
                 if not interaction.response.is_done():
                     try:
@@ -747,61 +737,199 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
                         pass
                 await _gm_log_interaction(interaction, f"役職連絡送信: {role} → {dest} （選択: {ab}）")
 
+        class ToActionButton(discord.ui.Button):
+            def __init__(self, parent: 'RoleSendPhaseView'):
+                super().__init__(label="役職行動", style=discord.ButtonStyle.primary, custom_id="rolemsg_to_action")
+
+            async def callback(self, interaction: discord.Interaction):
+                v = _build_role_action_phase_view(guild_id)
+                try:
+                    await interaction.message.edit(content="役職行動フェーズ: 役職/対象/送る内容を選んで送信してください\n- 送信ボタンと翌日に進むボタンが利用可能です", view=v)
+                except Exception:
+                    pass
+                if not interaction.response.is_done():
+                    try:
+                        await interaction.response.defer(ephemeral=True)
+                    except Exception:
+                        pass
+                await _gm_log(guild=None if not hasattr(interaction, 'guild') else interaction.guild, content=f"[GM Action] {interaction.user.mention} 役職行動フェーズへ移行")
+        return RoleSendPhaseView()
+
+
+def _build_role_action_phase_view(guild_id: int) -> discord.ui.View:
+    roles = [
+        "占い結果",
+        "霊能",
+        "狂人",
+    ]
+    parts = Storage.get_participants(guild_id)
+    wolf_hos = {"HO1", "HO4", "HO10"}
+    ho_options = []
+    for p in parts:
+        if not p.get("ho"):
+            continue
+        ho = str(p.get("ho"))
+        name = str(p.get("name", ""))
+        wolf_tag = "（人狼）" if ho in wolf_hos else ""
+        label = f"{ho} {name}{wolf_tag}".strip()
+        ho_options.append(discord.SelectOption(label=label, value=ho))
+    if not ho_options:
+        ho_options = [discord.SelectOption(label="対象なし", value="none")]
+
+    class RoleActionPhaseView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=None)
+            self.selected_dest_ho: str | None = None
+            self.selected_role: str | None = None
+            self.selected_target_ho: str | None = None
+            self.role_select = self.RoleSelect(self)
+            self.dest_select = self.DestinationSelect(self)
+            self.template_select = self.TemplateSelect(self)
+            self.send_button = self.SendButton(self)
+            self.nextday_button = self.NextDayButton(self)
+            self.add_item(self.dest_select)
+            self.add_item(self.role_select)
+            self.add_item(self.template_select)
+            self.add_item(self.send_button)
+            self.add_item(self.nextday_button)
+
+        def _compute_texts(self) -> tuple[str, str] | None:
+            role = self.selected_role
+            ho = self.selected_target_ho
+            if not role:
+                return None
+            name = None
+            if ho and ho != "none":
+                for p in Storage.get_participants(guild_id):
+                    if p.get("ho") == ho:
+                        name = p.get("name")
+                        break
+            disp = f"{ho}（{name}）" if (ho and name) else (ho or "")
+            if role == "占い結果":
+                return (f"天啓：指名した相手は狼です。", f"天啓：指名した相手は狼ではないようだ。")
+            if role == "霊能":
+                return (f"天啓：貴方は霊能者です。吊られた人は狼です。", f"天啓：貴方は霊能者です。吊られた人は狼ではないようだ。")
+            if role == "狂人":
+                return (
+                    f"天啓：あなたは今日、なんだか無性に寿司狼の味方をしなければならない気がしている。\nあなたは狼陣営です。",
+                    f"天啓：あなたは正気を取り戻しました。\n以降あなたは村人陣営の味方です",
+                )
+            return (f"{disp} へ連絡", f"{disp} へ連絡（別案）")
+
+        async def _refresh_template_options(self, interaction: discord.Interaction):
+            texts = self._compute_texts()
+            if not texts:
+                self.template_select.options = [
+                    discord.SelectOption(label="役職と対象を先に選択してください", value="none")
+                ]
+            else:
+                a, b = texts
+                self.template_select.options = [
+                    discord.SelectOption(label=f"A: {a}", value="A"),
+                    discord.SelectOption(label=f"B: {b}", value="B"),
+                ]
+            await interaction.response.edit_message(content=self._summary_text(), view=self)
+
+        def _summary_text(self) -> str:
+            dest = self.selected_dest_ho or "未選択"
+            role = self.selected_role or "未選択"
+            target = self.selected_target_ho or "未選択"
+            choice = (self.template_select.values[0] if self.template_select.values else None) or "未選択"
+            preview = "(役職/対象未選択)"
+            texts = self._compute_texts()
+            if texts:
+                a, b = texts
+                preview = f"A: {a}\nB: {b}"
+            dest_display = dest
+            if isinstance(dest, str) and dest in {"HO1", "HO4", "HO10"}:
+                dest_display = f"{dest}（人狼）"
+            return (
+                "役職行動フェーズ: 役職/対象/送る内容を選んで送信してください\n"
+                f"- 送信先HO: {dest_display}\n"
+                f"- 役職: {role}\n"
+                f"- 対象HO: {target}\n"
+                f"- 選択: {choice}\n"
+                f"- プレビュー:\n{preview}"
+            )
+
+        class RoleSelect(discord.ui.Select):
+            def __init__(self, parent: 'RoleActionPhaseView'):
+                super().__init__(placeholder="役職を選択", min_values=1, max_values=1,
+                                 options=[discord.SelectOption(label=r, value=r) for r in roles],
+                                 custom_id="rolemsg_role")
+
+            async def callback(self, interaction: discord.Interaction):
+                pv: 'RoleActionPhaseView' = self.view
+                pv.selected_role = self.values[0]
+                await pv._refresh_template_options(interaction)
+
+        class DestinationSelect(discord.ui.Select):
+            def __init__(self, parent: 'RoleActionPhaseView'):
+                super().__init__(placeholder="送信先HOの個別チャンネルを選択", min_values=1, max_values=1, options=ho_options,
+                                 custom_id="rolemsg_dest")
+
+            async def callback(self, interaction: discord.Interaction):
+                pv: 'RoleActionPhaseView' = self.view
+                pv.selected_dest_ho = self.values[0]
+                await interaction.response.edit_message(content=pv._summary_text(), view=pv)
+
+        class TemplateSelect(discord.ui.Select):
+            def __init__(self, parent: 'RoleActionPhaseView'):
+                super().__init__(placeholder="送る内容を選択 (A/B)", min_values=1, max_values=1,
+                                 options=[discord.SelectOption(label="役職と対象を先に選択してください", value="none")],
+                                 custom_id="rolemsg_tmpl")
+
+            async def callback(self, interaction: discord.Interaction):
+                pv: 'RoleActionPhaseView' = self.view
+                await interaction.response.edit_message(content=pv._summary_text(), view=pv)
+
+        class SendButton(discord.ui.Button):
+            def __init__(self, parent: 'RoleActionPhaseView'):
+                super().__init__(label="送信", style=discord.ButtonStyle.success, custom_id="rolemsg_send")
+
+            async def callback(self, interaction: discord.Interaction):
+                pv: 'RoleActionPhaseView' = self.view
+                role = pv.selected_role
+                dest = pv.selected_dest_ho
+                if not role or not dest or dest == "none" or not pv.template_select.values:
+                    if not interaction.response.is_done():
+                        await interaction.response.edit_message(content=pv._summary_text(), view=pv)
+                    return
+                ab = pv.template_select.values[0]
+                texts = pv._compute_texts()
+                if not texts:
+                    if not interaction.response.is_done():
+                        await interaction.response.edit_message(content=pv._summary_text(), view=pv)
+                    return
+                text = texts[0] if ab == "A" else texts[1]
+                channel = discord.utils.get(interaction.guild.text_channels, name=str(dest).lower())
+                if channel is None:
+                    if not interaction.response.is_done():
+                        await interaction.response.edit_message(content=pv._summary_text(), view=pv)
+                    return
+                await channel.send(text)
+                if not interaction.response.is_done():
+                    try:
+                        await interaction.response.defer(ephemeral=True)
+                    except Exception:
+                        pass
+                await _gm_log_interaction(interaction, f"役職連絡送信: {role} → {dest} （選択: {ab}）")
+
         class NextDayButton(discord.ui.Button):
-            def __init__(self, parent: 'RoleMessageView'):
+            def __init__(self, parent: 'RoleActionPhaseView'):
                 super().__init__(label="翌日に進む", style=discord.ButtonStyle.primary, custom_id="rolemsg_next")
 
             async def callback(self, interaction: discord.Interaction):
                 await _do_next_day(interaction)
                 await _upsert_dashboard_panel(interaction.guild)
-                # 応答はdeferのみ（ダッシュボードに通知は出さない）
                 if not interaction.response.is_done():
                     try:
                         await interaction.response.defer(ephemeral=True)
                     except Exception:
                         pass
-                await _gm_log_interaction(interaction, "翌日に進む（役職連絡は送信せず）")
-                # 自身を無効化し、夜に移行するボタンを追加
-                pv: 'RoleMessageView' = self.view
-                self.disabled = True
-                # まだ追加していなければ夜ボタンを追加
-                if pv and pv.night_button not in pv.children:
-                    pv.add_item(pv.night_button)
-                # メッセージ更新
-                try:
-                    await interaction.message.edit(content=pv._summary_text(), view=pv)
-                except Exception:
-                    pass
+                await _gm_log_interaction(interaction, "翌日に進む（役職行動フェーズ）")
 
-        class NightPhaseButton(discord.ui.Button):
-            def __init__(self, parent: 'RoleMessageView'):
-                super().__init__(label="夜に移行する", style=discord.ButtonStyle.primary, custom_id="rolemsg_night")
-
-            async def callback(self, interaction: discord.Interaction):
-                # 夜フェーズへ移行し投票UIを展開
-                await _do_night_phase(interaction)
-                # 応答はdeferのみ（ダッシュボードに通知は出さない）
-                if not interaction.response.is_done():
-                    try:
-                        await interaction.response.defer(ephemeral=True)
-                    except Exception:
-                        pass
-                # 自身と翌日ボタンを無効化
-                pv: 'RoleMessageView' = self.view
-                self.disabled = True
-                if hasattr(pv, 'nextday_button') and pv.nextday_button:
-                    pv.nextday_button.disabled = True
-                # まだ追加していなければ「投票を締め切る」ボタンを追加
-                # 夜投票は行わないため追加しない
-                # メッセージ更新（ボタン群は無効化された状態で維持）
-                try:
-                    await interaction.message.edit(content=pv._summary_text(), view=pv)
-                except Exception:
-                    pass
-
-        
-
-    return RoleMessageView()
+        return RoleActionPhaseView()
 
 
 async def _disable_old_role_message_ui(guild: discord.Guild, keep_id: int) -> None:
@@ -817,7 +945,7 @@ async def _disable_old_role_message_ui(guild: discord.Guild, keep_id: int) -> No
             text = msg.content or ""
         except Exception:
             text = ""
-        if isinstance(text, str) and text.startswith("役職連絡:"):
+        if isinstance(text, str) and (text.startswith("役職送信フェーズ:") or text.startswith("役職行動フェーズ:") or text.startswith("役職連絡:")):
             if getattr(msg, "components", None):
                 try:
                     await msg.edit(content=msg.content, view=None)
