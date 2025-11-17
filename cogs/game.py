@@ -152,7 +152,7 @@ class GameCog(commands.Cog):
             label_map = {
                 "HO1": "味噌汁",
                 "HO2": "マグロ",
-                "HO3": "ビントロ",
+                "HO3": "えび",
                 "HO4": "茶碗蒸し",
                 "HO5": "サーモン",
                 "HO6": "つぶ貝",
@@ -175,8 +175,29 @@ class GameCog(commands.Cog):
                     )
                     try:
                         await ch.send(body)
-                    except discord.Forbidden:
+                    except Exception:
+                        try:
+                            _, _, log = await ensure_gm_environment(guild)
+                            await log.send(f"[WARN] HOチャンネルへの送信に失敗: {ho.lower()} → {member.display_name} ({member.id})")
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        _, _, log = await ensure_gm_environment(guild)
+                        await log.send(f"[WARN] HOチャンネル未検出: {ho.lower()}（{member.display_name}）")
+                    except Exception:
                         pass
+            else:
+                try:
+                    _, _, log = await ensure_gm_environment(guild)
+                    await log.send(f"[WARN] 対象メンバーのHO未登録: {member.display_name} ({member.id})")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # 最終確認（エフェメラル）
+        try:
+            await interaction.followup.send("✅ 対象を霊界に移動し、必要な通知を送信しました", ephemeral=True)
         except Exception:
             pass
 
@@ -203,9 +224,21 @@ class GameCog(commands.Cog):
                     self.disabled = True
 
             async def callback(self, interaction: discord.Interaction):
+                # 二重実行の防止と応答の安定化
                 if Storage.is_spirit_reverse_used(self._gid):
-                    await interaction.response.send_message("このボタンは既に使用されています", ephemeral=True)
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message("このボタンは既に使用されています", ephemeral=True)
+                    else:
+                        try:
+                            await interaction.followup.send("このボタンは既に使用されています", ephemeral=True)
+                        except Exception:
+                            pass
                     return
+                if not interaction.response.is_done():
+                    try:
+                        await interaction.response.defer(ephemeral=True, thinking=False)
+                    except Exception:
+                        pass
                 Storage.set_spirit_reverse_used(self._gid, True)
                 # ボタンを無効化して編集
                 v = discord.ui.View(timeout=None)
@@ -218,7 +251,7 @@ class GameCog(commands.Cog):
                     pass
                 # 霊界チャンネルへ告知
                 try:
-                    await interaction.channel.send("逆回転、開始！！")
+                    await interaction.channel.send(f"🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀\n ｷｭｲﾝｷｭｲﾝｷｭｲﾝ!! \n 逆回転、開始！！ \n 押したのは：{interaction.user.mention}  \n🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀🌀")
                 except Exception:
                     pass
                 # ログ
@@ -229,14 +262,14 @@ class GameCog(commands.Cog):
                     pass
                 # 応答（エフェメラル）
                 try:
-                    await interaction.response.send_message("✅ 実行しました", ephemeral=True)
+                    await interaction.followup.send("✅ 実行しました", ephemeral=True)
                 except Exception:
                     pass
 
         view = discord.ui.View(timeout=None)
         view.add_item(ReverseButton(gid))
         try:
-            await channel.send("🌀 霊界：逆回転ボタン", view=view)
+            await channel.send("🌀 逆回転ボタン 🌀\nこのボタンを押すと、役職の流れる向きが反対になります。\n霊界から誰でも押せますが、ゲーム全体を通じて一度しか押せません。", view=view)
         except Exception:
             if not interaction.response.is_done():
                 await interaction.response.send_message("送信に失敗しました", ephemeral=True)

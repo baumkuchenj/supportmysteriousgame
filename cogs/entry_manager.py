@@ -156,6 +156,18 @@ def _build_tally_text(guild_id: int) -> str:
     parts = Storage.get_participants(guild_id)
     name_by_ho = {str(p.get("ho")): p.get("name") for p in parts if p.get("ho")}
     lines = ["🗳️ 夜の投票状況"]
+    # 占い/狩人の夜アクション状況
+    na = Storage.get_night_actions(guild_id)
+    for role in ("占い", "狩人"):
+        role_map = na.get(role, {})
+        for voter_ho, target in sorted(role_map.items()):
+            if not voter_ho:
+                continue
+            if target:
+                tname = name_by_ho.get(target, target)
+                lines.append(f"{role}: {voter_ho} → {target} ({tname})")
+            else:
+                lines.append(f"{role}: {voter_ho} → 未選択")
     for ho in sorted(name_by_ho.keys()):
         target = votes.get(ho)
         if target:
@@ -358,17 +370,14 @@ class EntryManagerCog(commands.Cog):
         wolf_hos = {"HO1", "HO4", "HO10"}
         wolf_text = (
             "あなたは【寿司狼】です。\n"
-            "あなたはこの回転寿司屋の安っぽいレーンで回されている寿司たちに、かつて海を自由に泳いでいた魚としての誇りを思い出させるため、襲撃を行います。\n"
+            "この回転寿司屋の安っぽいレーンで回されている寿司たちに、かつて海を自由に泳いでいた魚としての誇りを思い出させるため、襲撃を行います。\n"
             "能力:毎晩一人を指名し、襲撃を行う\n"
             "尚、この回転寿司屋では、役職は回転しており、\n"
             "寿司たちは記憶を失ったまま、毎晩誰かしら一人を指名している\n"
-            "もしかしたらあなたにも、役職が回ってくるかもしれない\n"
             "また、ほかにもあなたの存在を脅かす寿司がいるかもしれない"
         )
         other_text = (
             "あなたは何も思い出せない。\n"
-            "能力:毎晩一人を指名する\n"
-            "※死んだ人は指定できない"
         )
 
         # 対象HOの決定
@@ -493,10 +502,13 @@ async def _do_night_phase(interaction: discord.Interaction):
     guild = interaction.guild
     Storage.ensure_game(guild.id)
     Storage.data["game"][str(guild.id)]["phase"] = "night"
+    # 旧夜UIは廃止。占い/狩人のアクション入力に切替
+    # 既存の投票データは初期化し、night_actions もクリア
     parts = Storage.get_participants(guild.id)
     ho_list = [p.get("ho") for p in parts if p.get("ho")]
     Storage.init_votes(guild.id, ho_list)
     Storage.set_voting_open(guild.id, True)
+    Storage.clear_night_actions(guild.id)
     Storage.save()
     await _gm_log_interaction(interaction, "夜フェーズに移行し投票を開始")
     # GM tally message
@@ -511,23 +523,10 @@ async def _do_night_phase(interaction: discord.Interaction):
             await vote_channel.edit(category=gm_category)
         except discord.Forbidden:
             pass
+    # 夜アクション/投票の初期集計を掲示（以後はHO側UIの送信により更新）
     text = _build_tally_text(guild.id)
     msg = await vote_channel.send(text)
     Storage.set_gm_vote_message(guild.id, msg.id)
-    # Send voting UI to each HO channel
-    for p in parts:
-        ho = str(p.get("ho") or "").upper()
-        if not ho:
-            continue
-        # 霊界は夜UIの配布対象外
-        member = guild.get_member(int(p.get("id", 0)))
-        if member and is_member_spirit(member):
-            continue
-        channel = discord.utils.get(guild.text_channels, name=ho.lower())
-        if channel is None:
-            continue
-        view = _build_vote_view(guild, ho)
-        await channel.send("誰か一人を選択してください", view=view)
 
 
 async def _do_close_vote(interaction: discord.Interaction):
@@ -639,6 +638,8 @@ def _build_vote_view(guild: discord.Guild, voter_ho: str) -> discord.ui.View:
 def _build_role_message_view(guild_id: int) -> discord.ui.View:
     roles = [
         "占い",
+        "占い結果",
+        "狩人",
         "霊能",
         "狂人",
     ]
@@ -691,13 +692,19 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
                         break
             disp = f"{ho}（{name}）" if (ho and name) else (ho or "")
             if role == "占い":
-                return (f"天啓：狼です。", f"天啓：狼ではないようだ。")
+                a = "天啓：貴方は占い師です。\n今晩占いたい相手を一人指名してください。"
+                return (a, a)
+            if role == "占い結果":
+                return (f"天啓：指名した相手は狼です。", f"天啓：指名した相手は狼ではないようだ。")
+            if role == "狩人":
+                a = "天啓：貴方は狩人です。\n護衛したい人を一人指名してください。"
+                return (a, a)
             if role == "霊能":
-                return (f"天啓：狼です。", f"天啓：狼ではないようだ。")
+                return (f"天啓：貴方は霊能者です。吊られた人は狼です。", f"天啓：貴方は霊能者です。吊られた人は狼ではないようだ。")
             if role == "狂人":
                 return (
-                    f"あなたは今日、なんだか無性に寿司狼の味方をしなければならない気がしている。",
-                    f"あなたは今日、なんだか無性に寿司狼の味方をしなければならない気がしている。（別案）",
+                    f"天啓：あなたは今日、なんだか無性に寿司狼の味方をしなければならない気がしている。\nあなたは狼陣営です。",
+                    f"天啓：あなたは正気を取り戻しました。\n以降あなたは村人陣営の味方です",
                 )
             return (f"{disp} へ連絡", f"{disp} へ連絡（別案）")
 
@@ -799,7 +806,12 @@ def _build_role_message_view(guild_id: int) -> discord.ui.View:
                     if not interaction.response.is_done():
                         await interaction.response.edit_message(content=pv._summary_text(), view=pv)
                     return
-                await channel.send(text)
+                # 占い/狩人にはHOチャンネルに選択UIを付けて送信
+                if role in {"占い", "狩人"}:
+                    view = _build_action_view(interaction.guild, role, str(dest))
+                    await channel.send(text, view=view)
+                else:
+                    await channel.send(text)
                 # 応答はdeferのみ（ダッシュボードに通知は出さない）
                 if not interaction.response.is_done():
                     try:
@@ -905,6 +917,73 @@ async def _disable_old_role_message_ui(guild: discord.Guild, keep_id: int) -> No
                     await msg.edit(content=msg.content, view=None)
                 except Exception:
                     pass
+
+
+def _build_action_view(guild: discord.Guild, role: str, voter_ho: str) -> discord.ui.View:
+    guild_id = guild.id
+    parts = Storage.get_participants(guild_id)
+    options = []
+    for p in parts:
+        ho = str(p.get("ho") or "")
+        if not ho or ho == voter_ho:
+            continue
+        # 霊界は対象外
+        member = guild.get_member(int(p.get("id", 0)))
+        if member and is_member_spirit(member):
+            continue
+        label = f"{ho} {p.get('name','')}"
+        options.append(discord.SelectOption(label=label, value=str(ho)))
+    if not options:
+        options = [discord.SelectOption(label="候補なし", value="none")]
+
+    class _Select(discord.ui.Select):
+        def __init__(self):
+            super().__init__(placeholder="対象を選択", min_values=1, max_values=1, options=options)
+            self._selected = None
+
+        async def callback(self, interaction: discord.Interaction):
+            self._selected = self.values[0]
+            await interaction.response.send_message("✅ 選択を一時保存しました。送信で確定します。", ephemeral=True)
+
+    class _Submit(discord.ui.Button):
+        def __init__(self, select: _Select):
+            super().__init__(label="送信", style=discord.ButtonStyle.primary)
+            self._select = select
+
+        async def callback(self, interaction: discord.Interaction):
+            target = self._select._selected
+            if not target or target == "none":
+                await interaction.response.send_message("対象を選択してください", ephemeral=True)
+                return
+            Storage.set_night_action(guild_id, role, voter_ho, target)
+            # Update GM tally (reuse existing channel/message if any)
+            from utils.helpers import ensure_gm_environment as _egm
+            gm_role, gm_dash, _ = await _egm(interaction.guild)
+            gm_category = gm_dash.category
+            vote_channel = None
+            if gm_category:
+                vote_channel = discord.utils.get(gm_category.text_channels, name="vote_night")
+            if vote_channel is None:
+                vote_channel = await interaction.guild.create_text_channel("vote_night", category=gm_category)
+            text = _build_tally_text(guild_id)
+            try:
+                msg_id = Storage.get_gm_vote_message(interaction.guild.id)
+                if msg_id:
+                    msg = await vote_channel.fetch_message(msg_id)
+                    await msg.edit(content=text)
+                else:
+                    msg = await vote_channel.send(text)
+                    Storage.set_gm_vote_message(interaction.guild.id, msg.id)
+            except discord.NotFound:
+                msg = await vote_channel.send(text)
+                Storage.set_gm_vote_message(interaction.guild.id, msg.id)
+            await interaction.response.send_message("📨 送信しました", ephemeral=True)
+
+    view = discord.ui.View(timeout=None)
+    select = _Select()
+    view.add_item(select)
+    view.add_item(_Submit(select))
+    return view
 
     class TargetSelect(discord.ui.Select):
         def __init__(self):

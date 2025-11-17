@@ -25,6 +25,7 @@ class Storage:
         "gm_vote_message_id": {},     # {guild_id: int}
         "dashboard_message_id": {},   # {guild_id: int}
         "spirit_reverse_used": {},    # {guild_id: bool}
+        "night_actions": {},          # {guild_id: { "占い": {voter_ho: target_ho}, "狩人": {voter_ho: target_ho} }}
     }
 
     # ---------- IO ----------
@@ -61,7 +62,7 @@ class Storage:
 
     @classmethod
     def _fresh(cls) -> None:
-        cls.data = {"participants": {}, "game": {}, "votes": {}, "voting_open": {}, "gm_vote_message_id": {}, "dashboard_message_id": {}, "spirit_reverse_used": {}}
+        cls.data = {"participants": {}, "game": {}, "votes": {}, "voting_open": {}, "gm_vote_message_id": {}, "dashboard_message_id": {}, "spirit_reverse_used": {}, "night_actions": {}}
         cls.save()
 
     @classmethod
@@ -212,6 +213,35 @@ class Storage:
     @classmethod
     def set_gm_vote_message(cls, guild_id: int, message_id: int) -> None:
         cls.data["gm_vote_message_id"][cls._g(guild_id)] = int(message_id)
+        cls.save()
+
+    # ---------- night actions (占い/狩人) ----------
+    @classmethod
+    def set_night_action(cls, guild_id: int, role: str, voter_ho: str, target_ho: Optional[str]) -> None:
+        gid = cls._g(guild_id)
+        cls.data.setdefault("night_actions", {})
+        cls.data["night_actions"].setdefault(gid, {})
+        ga = cls.data["night_actions"][gid]
+        role_key = str(role)
+        ga.setdefault(role_key, {})
+        if target_ho is None:
+            ga[role_key].pop(voter_ho, None)
+        else:
+            ga[role_key][voter_ho] = target_ho
+        cls.save()
+
+    @classmethod
+    def get_night_actions(cls, guild_id: int) -> Dict[str, Dict[str, Optional[str]]]:
+        gid = cls._g(guild_id)
+        na = cls.data.get("night_actions", {}).get(gid, {})
+        # shallow copy to avoid external mutation
+        return {rk: dict(v) for rk, v in na.items()}
+
+    @classmethod
+    def clear_night_actions(cls, guild_id: int) -> None:
+        gid = cls._g(guild_id)
+        cls.data.setdefault("night_actions", {})
+        cls.data["night_actions"][gid] = {}
         cls.save()
 
     @classmethod
