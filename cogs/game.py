@@ -73,7 +73,11 @@ class GameCog(commands.Cog):
         # 4) ストレージを初期化
         Storage.reset_guild(guild.id)
 
-        # 応答はUIに出さず終了（必要であればgm-logに記録する運用も可）
+        # 最後に必ずエフェメラルで完了通知
+        try:
+            await interaction.followup.send("ゲーム状態を初期化しました", ephemeral=True)
+        except Exception:
+            pass
 
     @app_commands.command(name="add_spirit", description="死亡者を霊界に移動（役職\"霊界\"付与＆霊界チャンネル作成/入室）")
     async def add_spirit(self, interaction: discord.Interaction, member: discord.Member):
