@@ -5,7 +5,7 @@ from discord.ext import commands
 
 from storage import Storage
 from config import GM_ROLE_NAME, GM_CATEGORY_NAME, PRIVATE_CATEGORY_NAME, PLAYER_ROLE_NAME
-from utils.helpers import ensure_gm_environment, ensure_player_role
+from utils.helpers import ensure_gm_environment, ensure_player_role, has_gm_or_manage_guild
 
 
 class GameCog(commands.Cog):
@@ -16,6 +16,9 @@ class GameCog(commands.Cog):
     async def reset_game(self, interaction: discord.Interaction):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
             return
         guild = interaction.guild
         await Storage.ensure_loaded()
@@ -87,6 +90,10 @@ class GameCog(commands.Cog):
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
             return
         guild = interaction.guild
+        # 事前権限チェック
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
+            return
         # 先に静かにdefer
         if not interaction.response.is_done():
             try:
@@ -124,6 +131,9 @@ class GameCog(commands.Cog):
     async def add_spirit(self, interaction: discord.Interaction, member: discord.Member):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
             return
         guild = interaction.guild
         await Storage.ensure_loaded()
@@ -250,6 +260,9 @@ class GameCog(commands.Cog):
     async def spirit_reverse_button(self, interaction: discord.Interaction):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
             return
         await Storage.ensure_loaded()
         gid = interaction.guild.id

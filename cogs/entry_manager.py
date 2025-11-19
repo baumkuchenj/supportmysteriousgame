@@ -1,12 +1,13 @@
 # cogs/entry_manager.py
 import discord
+import asyncio
 from discord import app_commands
 from discord.ext import commands
 from typing import List
 
-from config import ENTRY_TITLE, ENTRY_DESCRIPTION, PRIVATE_CATEGORY_NAME
+from config import ENTRY_TITLE, ENTRY_DESCRIPTION, PRIVATE_CATEGORY_NAME, GM_ROLE_NAME
 from storage import Storage
-from utils.helpers import ensure_gm_environment, ensure_player_role, is_member_spirit
+from utils.helpers import ensure_gm_environment, ensure_player_role, is_member_spirit, has_gm_or_manage_guild
 
 
 def build_participants_embed(guild_id: int) -> discord.Embed:
@@ -270,6 +271,9 @@ class EntryManagerCog(commands.Cog):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
             return
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
+            return
         await Storage.ensure_loaded()
         guild = interaction.guild
         # 参加者ロールも用意
@@ -296,6 +300,9 @@ class EntryManagerCog(commands.Cog):
     async def close_entry(self, interaction: discord.Interaction):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
             return
         await Storage.ensure_loaded()
         await _do_close_entry(interaction)
@@ -324,6 +331,7 @@ class EntryManagerCog(commands.Cog):
             try:
                 self.bot.add_view(_build_role_send_phase_view(guild.id))
                 self.bot.add_view(_build_role_action_phase_view(guild.id))
+                self.bot.add_view(_build_hint_buttons_view(guild.id))
             except Exception:
                 pass
 
@@ -331,6 +339,9 @@ class EntryManagerCog(commands.Cog):
     async def sync_players(self, interaction: discord.Interaction):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
             return
         await Storage.ensure_loaded()
         guild = interaction.guild
@@ -351,11 +362,103 @@ class EntryManagerCog(commands.Cog):
         await dash.send("🧩 参加者管理パネル", embed=build_participants_embed(guild.id), view=EntryManageView(guild))
         await interaction.response.send_message(f"🔄 playerロールから参加者を同期しました（{len(participants)}名）", ephemeral=True)
 
+    @app_commands.command(name="repost_role_ui", description="役職UIを再掲（フェーズ変更なし・復旧用）")
+    @app_commands.describe(phase="再掲するUIを選択: send=役職送信フェーズ / action=役職行動フェーズ")
+    @app_commands.choices(
+        phase=[
+            app_commands.Choice(name="役職送信フェーズ", value="send"),
+            app_commands.Choice(name="役職行動フェーズ", value="action"),
+        ]
+    )
+    async def repost_role_ui(self, interaction: discord.Interaction, phase: app_commands.Choice[str]):
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        await Storage.ensure_loaded()
+        guild = interaction.guild
+        # 先に静かにdefer
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+        # 権限チェック: GMロール or Manage Guild
+        gm_role = discord.utils.get(guild.roles, name=GM_ROLE_NAME)
+        perms_ok = interaction.user.guild_permissions.manage_guild
+        if gm_role and gm_role in getattr(interaction.user, 'roles', []):
+            perms_ok = True
+        if not perms_ok:
+            try:
+                await interaction.followup.send("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
+            except Exception:
+                pass
+            return
+        # ダッシュボードに再掲
+        _, dash, _ = await ensure_gm_environment(guild)
+        try:
+            if phase.value == "send":
+                view = _build_role_send_phase_view(guild.id)
+                content = (
+                    "役職送信フェーズ: 役職/対象/送る内容を選んで送信してください\n"
+                    "- この投稿は復旧のために再掲されています"
+                )
+            else:
+                view = _build_role_action_phase_view(guild.id)
+                content = (
+                    "役職行動フェーズ: 役職/対象/送る内容を選んで送信してください\n"
+                    "- 送信ボタンと翌日に進むボタンが利用可能です\n"
+                    "- この投稿は復旧のために再掲されています"
+                )
+            await dash.send(content, view=view)
+            try:
+                await interaction.followup.send("🔁 役職UIを再掲しました", ephemeral=True)
+            except Exception:
+                pass
+            await _gm_log_interaction(interaction, f"役職UI再掲 ({phase.value})")
+        except Exception:
+            try:
+                await interaction.followup.send("❌ 再掲に失敗しました", ephemeral=True)
+            except Exception:
+                pass
+
+    @app_commands.command(name="post_hint_buttons", description="ダッシュボードにヒントボタンを表示（ヒント1→ヒント/ 2-4→霊界）")
+    async def post_hint_buttons(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
+            return
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+        guild = interaction.guild
+        await Storage.ensure_loaded()
+        # ダッシュボードへ投稿
+        _, dash, _ = await ensure_gm_environment(guild)
+        try:
+            await dash.send("🔎 ヒントボタン", view=_build_hint_buttons_view(guild.id))
+            try:
+                await interaction.followup.send("🧩 ヒントボタンを表示しました", ephemeral=True)
+            except Exception:
+                pass
+            await _gm_log_interaction(interaction, "ヒントボタンをダッシュボードに掲示")
+        except Exception:
+            try:
+                await interaction.followup.send("❌ ヒントボタンの表示に失敗しました", ephemeral=True)
+            except Exception:
+                pass
+
     @app_commands.command(name="send_intro_messages", description="HO個別チャンネルに役職説明を送信（HO1/4/10は寿司狼文、他は一般文）。任意で特定HOに上書き送信可")
     @app_commands.describe(target_ho="特定のHOにのみ送る（例: HO3）", text="そのHOに送るカスタム文面（未指定ならデフォルト文）")
     async def send_intro_messages(self, interaction: discord.Interaction, target_ho: str | None = None, text: str | None = None):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
             return
         guild = interaction.guild
         await Storage.ensure_loaded()
@@ -369,6 +472,17 @@ class EntryManagerCog(commands.Cog):
             "寿司たちは記憶を失ったまま、毎晩誰かしら一人を指名している\n"
             "また、ほかにもあなたの存在を脅かす寿司がいるかもしれない"
         )
+        sharer_hos5 = {"HO5"}
+        sharer_text5(
+            "あなたは【親子】です。\n"
+            "8番とは親子関係だったことを記憶しており、お互いに村人陣営の味方であることを知っています。"
+        )
+        sharer_hos8 = {"HO8"}
+        sharer_text8(
+            "あなたは【親子】です。\n"
+            "5番とは親子関係だったことを記憶しており、お互いに村人陣営の味方であることを知っています。"
+        )
+
         other_text = (
             "あなたは何も思い出せない。\n"
         )
@@ -479,6 +593,37 @@ async def _do_close_entry(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True, thinking=False)
         except Exception:
             pass
+    # ゲーム進行カテゴリと player 可視の2チャンネル（連絡/ヒント）を用意
+    try:
+        player_role = await ensure_player_role(guild)
+    except Exception:
+        player_role = None
+    progress_cat = discord.utils.get(guild.categories, name="ゲーム進行")
+    if progress_cat is None:
+        try:
+            progress_cat = await guild.create_category("ゲーム進行")
+        except discord.Forbidden:
+            progress_cat = None
+    def _ensure_text_channel(name: str) -> None:
+        ch = discord.utils.get(guild.text_channels, name=name)
+        if ch is None and progress_cat is not None and player_role is not None:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                gm_role or guild.default_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
+                player_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
+            }
+            try:
+                return asyncio.create_task(guild.create_text_channel(name, category=progress_cat, overwrites=overwrites))
+            except Exception:
+                return None
+        elif ch is not None and progress_cat is not None and ch.category_id != progress_cat.id:
+            try:
+                return asyncio.create_task(ch.edit(category=progress_cat))
+            except Exception:
+                return None
+        return None
+    _ensure_text_channel("連絡")
+    _ensure_text_channel("ヒント")
     await _gm_log_interaction(interaction, f"参加者募集を締め切り。作成/準備したチャンネル: {summary}")
 
 
@@ -566,6 +711,146 @@ def _build_vote_view(guild: discord.Guild, voter_ho: str) -> discord.ui.View:
     return discord.ui.View(timeout=None)
 
 
+def _build_hint_buttons_view(guild_id: int) -> discord.ui.View:
+    class HintButtonsView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=None)
+            self.add_item(self.Hint1())
+            self.add_item(self.Hint2())
+            self.add_item(self.Hint3())
+            self.add_item(self.Hint4())
+
+        async def _ensure_progress_channels(self, guild: discord.Guild) -> tuple[discord.TextChannel | None, discord.TextChannel | None]:
+            from utils.helpers import ensure_player_role
+            # カテゴリと「連絡」「ヒント」
+            progress_cat = discord.utils.get(guild.categories, name="ゲーム進行")
+            if progress_cat is None:
+                try:
+                    progress_cat = await guild.create_category("ゲーム進行")
+                except discord.Forbidden:
+                    progress_cat = None
+            try:
+                player_role = await ensure_player_role(guild)
+            except Exception:
+                player_role = None
+            def _perm_overwrites():
+                return {
+                    guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                    discord.utils.get(guild.roles, name=GM_ROLE_NAME) or guild.default_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
+                    player_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True) if player_role else None,
+                }
+            def _cleanup_overwrites(ow: dict):
+                return {k: v for k, v in ow.items() if k is not None}
+            contact = discord.utils.get(guild.text_channels, name="連絡")
+            hint = discord.utils.get(guild.text_channels, name="ヒント")
+            if hint is None and progress_cat is not None:
+                try:
+                    hint = await guild.create_text_channel("ヒント", category=progress_cat, overwrites=_cleanup_overwrites(_perm_overwrites()))
+                except Exception:
+                    hint = None
+            if contact is None and progress_cat is not None:
+                try:
+                    contact = await guild.create_text_channel("連絡", category=progress_cat, overwrites=_cleanup_overwrites(_perm_overwrites()))
+                except Exception:
+                    contact = None
+            # カテゴリ不一致なら移動
+            if progress_cat is not None:
+                for ch in (hint, contact):
+                    if ch is not None and ch.category_id != progress_cat.id:
+                        try:
+                            await ch.edit(category=progress_cat)
+                        except Exception:
+                            pass
+            return contact, hint
+
+        async def _ensure_spirit_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+            # 霊界チャンネル（個別カテゴリ配下）。霊界ロールに可視。
+            category = discord.utils.get(guild.categories, name=PRIVATE_CATEGORY_NAME)
+            if category is None:
+                try:
+                    category = await guild.create_category(PRIVATE_CATEGORY_NAME, reason="Create private HO category")
+                except discord.Forbidden:
+                    category = None
+            spirit_role = discord.utils.get(guild.roles, name="霊界")
+            if spirit_role is None:
+                try:
+                    spirit_role = await guild.create_role(name="霊界", reason="Spirit role for afterlife chat")
+                except discord.Forbidden:
+                    spirit_role = None
+            channel = discord.utils.get(guild.text_channels, name="霊界")
+            if channel is None and category is not None and spirit_role is not None:
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                    discord.utils.get(guild.roles, name=GM_ROLE_NAME) or guild.default_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
+                    spirit_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
+                }
+                try:
+                    channel = await guild.create_text_channel("霊界", category=category, overwrites=overwrites, reason="Create shared spirit channel")
+                except discord.Forbidden:
+                    channel = None
+            return channel
+
+        async def _send_hint(self, interaction: discord.Interaction, idx: int):
+            if not interaction.guild:
+                return
+            guild = interaction.guild
+            # 1はヒントへ、2-4は霊界へ
+            target_channel: discord.TextChannel | None = None
+            if idx == 1:
+                _, hint_ch = await self._ensure_progress_channels(guild)
+                target_channel = hint_ch
+            else:
+                target_channel = await self._ensure_spirit_channel(guild)
+            if target_channel is not None:
+                try:
+                    await target_channel.send(f"ヒント{idx}")
+                except Exception:
+                    pass
+            # エフェメラル応答
+            if not interaction.response.is_done():
+                try:
+                    await interaction.response.defer(ephemeral=True)
+                except Exception:
+                    pass
+            try:
+                await interaction.followup.send(f"✅ ヒント{idx}を送信しました", ephemeral=True)
+            except Exception:
+                pass
+            try:
+                await _gm_log_interaction(interaction, f"ヒント{idx}を送信")
+            except Exception:
+                pass
+
+        class Hint1(discord.ui.Button):
+            def __init__(self):
+                super().__init__(label="ヒント①", style=discord.ButtonStyle.secondary, custom_id="hint_btn_1")
+            async def callback(self, interaction: discord.Interaction):
+                view: HintButtonsView = self.view
+                await view._send_hint(interaction, 1)
+
+        class Hint2(discord.ui.Button):
+            def __init__(self):
+                super().__init__(label="ヒント②", style=discord.ButtonStyle.secondary, custom_id="hint_btn_2")
+            async def callback(self, interaction: discord.Interaction):
+                view: HintButtonsView = self.view
+                await view._send_hint(interaction, 2)
+
+        class Hint3(discord.ui.Button):
+            def __init__(self):
+                super().__init__(label="ヒント③", style=discord.ButtonStyle.secondary, custom_id="hint_btn_3")
+            async def callback(self, interaction: discord.Interaction):
+                view: HintButtonsView = self.view
+                await view._send_hint(interaction, 3)
+
+        class Hint4(discord.ui.Button):
+            def __init__(self):
+                super().__init__(label="ヒント④", style=discord.ButtonStyle.secondary, custom_id="hint_btn_4")
+            async def callback(self, interaction: discord.Interaction):
+                view: HintButtonsView = self.view
+                await view._send_hint(interaction, 4)
+
+    return HintButtonsView()
+
 def _build_role_send_phase_view(guild_id: int) -> discord.ui.View:
     roles = ["占い", "狩人"]
     parts = Storage.get_participants(guild_id)
@@ -606,10 +891,10 @@ def _build_role_send_phase_view(guild_id: int) -> discord.ui.View:
                 return None
             a = None
             if role == "占い":
-                a = "天啓：貴方は占い師です。\n今晩占いたい相手を一人指名してください。"
+                a = "貴方は占い師です。\n今晩占いたい相手を一人指名してください。"
                 return (a, a)
             if role == "狩人":
-                a = "天啓：貴方は狩人です。\n護衛したい人を一人指名してください。"
+                a = "貴方は狩人です。\n護衛したい人を一人指名してください。"
                 return (a, a)
             return None
 
@@ -791,13 +1076,13 @@ def _build_role_action_phase_view(guild_id: int) -> discord.ui.View:
                         break
             disp = f"{ho}（{name}）" if (ho and name) else (ho or "")
             if role == "占い結果":
-                return (f"天啓：指名した相手は狼です。", f"天啓：指名した相手は狼ではないようだ。")
+                return (f"指名した相手は狼です。", f"指名した相手は狼ではないようだ。")
             if role == "霊能":
-                return (f"天啓：貴方は霊能者です。吊られた人は狼です。", f"天啓：貴方は霊能者です。吊られた人は狼ではないようだ。")
+                return (f"貴方は霊能者です。吊られた人は狼です。", f"貴方は霊能者です。吊られた人は狼ではないようだ。")
             if role == "狂人":
                 return (
-                    f"天啓：あなたは今日、なんだか無性に寿司狼の味方をしなければならない気がしている。\nあなたは狼陣営です。",
-                    f"天啓：あなたは正気を取り戻しました。\n以降あなたは村人陣営の味方です",
+                    f"あなたの思考は何者かに乗っ取られてしまいました。あなたは今日、なんだか無性に寿司狼の味方をしなければならない気がしている。\nあなたは狼陣営です。\n今夜あなたがなんらかの能力の対象となった場合、その能力者は翌朝死亡します。",
+                    f"あなたは正気を取り戻しました。\n以降あなたは村人陣営の味方であり、なんらかの能力の対象となっても、その能力者は死亡しません。",
                 )
             return (f"{disp} へ連絡", f"{disp} へ連絡（別案）")
 

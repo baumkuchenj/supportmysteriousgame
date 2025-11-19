@@ -51,6 +51,15 @@ async def ensure_gm_environment(guild: discord.Guild) -> Tuple[discord.Role, dis
     return gm_role, dash, log
 
 
+def has_gm_or_manage_guild(interaction: discord.Interaction) -> bool:
+    if not interaction.guild:
+        return False
+    gm_role = discord.utils.get(interaction.guild.roles, name=GM_ROLE_NAME)
+    if gm_role and gm_role in getattr(interaction.user, 'roles', []):
+        return True
+    return bool(interaction.user.guild_permissions.manage_guild)
+
+
 async def ensure_player_role(guild: discord.Guild) -> discord.Role:
     """Ensure the player role exists and return it."""
     role = discord.utils.get(guild.roles, name=PLAYER_ROLE_NAME)
