@@ -451,7 +451,7 @@ class EntryManagerCog(commands.Cog):
             except Exception:
                 pass
 
-    @app_commands.command(name="send_intro_messages", description="HO個別チャンネルに役職説明を送信（HO1/4/10は寿司狼文、他は一般文）。任意で特定HOに上書き送信可")
+    @app_commands.command(name="send_intro_messages", description="HO個別チャンネルに役職説明を送信。任意で特定HOに上書き送信可")
     @app_commands.describe(target_ho="特定のHOにのみ送る（例: HO3）", text="そのHOに送るカスタム文面（未指定ならデフォルト文）")
     async def send_intro_messages(self, interaction: discord.Interaction, target_ho: str | None = None, text: str | None = None):
         if not interaction.guild:
@@ -645,16 +645,13 @@ async def _do_next_day(interaction: discord.Interaction):
     day = Storage.data["game"][str(interaction.guild.id)]["day"]
     await _gm_log_interaction(interaction, f"翌日に進行。現在 {day} 日目")
     # 翌日に進んだら、GMダッシュボードに役職行動フェーズUIを掲示（朝に配布する連絡を選べる）
+    _, gm_dash, _ = await ensure_gm_environment(interaction.guild)
+    new_msg = await gm_dash.send(
+        "役職行動フェーズ: 役職/対象/送る内容を選んで送信してください\n- 送信ボタンと翌日に進むボタンが利用可能です",
+        view=_build_role_action_phase_view(interaction.guild.id),
+    )
     try:
-        _, gm_dash, _ = await ensure_gm_environment(interaction.guild)
-        new_msg = await gm_dash.send(
-            "役職行動フェーズ: 役職/対象/送る内容を選んで送信してください\n- 送信ボタンと翌日に進むボタンが利用可能です",
-            view=_build_role_action_phase_view(interaction.guild.id),
-        )
-        try:
-            await _disable_old_role_message_ui(interaction.guild, keep_id=new_msg.id)
-        except Exception:
-            pass
+        await _disable_old_role_message_ui(interaction.guild, keep_id=new_msg.id)
     except Exception:
         pass
 
@@ -929,9 +926,21 @@ def _build_role_send_phase_view(guild_id: int) -> discord.ui.View:
                 ]
             else:
                 a, b = texts
+                # Discord の SelectOption.label は 1-100 文字制限があるため、
+                # プレビュー用に先頭だけを使う
+                def _shorten(s: str, prefix: str) -> str:
+                    base = s or ""
+                    # 最大 90 文字 + 接頭辞で 100 以内に収める
+                    if len(base) > 90:
+                        base = base[:90] + "…"
+                    label = f"{prefix}: {base}".strip()
+                    return label or prefix
+
+                label_a = _shorten(a, "A")
+                label_b = _shorten(b, "B")
                 self.template_select.options = [
-                    discord.SelectOption(label=f"A: {a}", value="A"),
-                    discord.SelectOption(label=f"B: {b}", value="B"),
+                    discord.SelectOption(label=label_a, value="A"),
+                    discord.SelectOption(label=label_b, value="B"),
                 ]
             await interaction.response.edit_message(content=self._summary_text(), view=self)
 
