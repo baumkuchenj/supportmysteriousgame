@@ -634,6 +634,19 @@ async def _do_next_day(interaction: discord.Interaction):
     Storage.save()
     day = Storage.data["game"][str(interaction.guild.id)]["day"]
     await _gm_log_interaction(interaction, f"翌日に進行。現在 {day} 日目")
+    # 翌日に進んだら、GMダッシュボードに役職行動フェーズUIを掲示（朝に配布する連絡を選べる）
+    try:
+        _, gm_dash, _ = await ensure_gm_environment(interaction.guild)
+        new_msg = await gm_dash.send(
+            "役職行動フェーズ: 役職/対象/送る内容を選んで送信してください\n- 送信ボタンと翌日に進むボタンが利用可能です",
+            view=_build_role_action_phase_view(interaction.guild.id),
+        )
+        try:
+            await _disable_old_role_message_ui(interaction.guild, keep_id=new_msg.id)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 async def _do_night_phase(interaction: discord.Interaction):
@@ -1258,6 +1271,14 @@ def _build_action_view(guild: discord.Guild, role: str, voter_ho: str) -> discor
             self._selected = None
 
         async def callback(self, interaction: discord.Interaction):
+            # 既に同一HOからの選択が確定している場合は拒否
+            try:
+                existing = Storage.get_night_actions(guild_id).get(role, {}).get(voter_ho)
+            except Exception:
+                existing = None
+            if existing:
+                await interaction.response.send_message("この役職の選択は既に確定しています", ephemeral=True)
+                return
             self._selected = self.values[0]
             await interaction.response.send_message("✅ 選択を一時保存しました。送信で確定します。", ephemeral=True)
 
@@ -1267,6 +1288,23 @@ def _build_action_view(guild: discord.Guild, role: str, voter_ho: str) -> discor
             self._select = select
 
         async def callback(self, interaction: discord.Interaction):
+            # 二重送信防止（既に記録があればブロック）
+            try:
+                existing = Storage.get_night_actions(guild_id).get(role, {}).get(voter_ho)
+            except Exception:
+                existing = None
+            if existing:
+                await interaction.response.send_message("この役職の選択は既に確定しています", ephemeral=True)
+                # 可能ならビューを無効化
+                try:
+                    v = self.view
+                    if v:
+                        for child in v.children:
+                            child.disabled = True
+                        await interaction.message.edit(view=v)
+                except Exception:
+                    pass
+                return
             target = self._select._selected
             if not target or target == "none":
                 await interaction.response.send_message("対象を選択してください", ephemeral=True)
@@ -1293,6 +1331,15 @@ def _build_action_view(guild: discord.Guild, role: str, voter_ho: str) -> discor
             except discord.NotFound:
                 msg = await vote_channel.send(text)
                 Storage.set_gm_vote_message(interaction.guild.id, msg.id)
+            # 送信後、このビューは無効化して再選択を防止
+            try:
+                v = self.view
+                if v:
+                    for child in v.children:
+                        child.disabled = True
+                    await interaction.message.edit(view=v)
+            except Exception:
+                pass
             await interaction.response.send_message("📨 送信しました", ephemeral=True)
 
     view = discord.ui.View(timeout=None)
