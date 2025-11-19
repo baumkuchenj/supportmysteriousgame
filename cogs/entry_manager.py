@@ -473,12 +473,12 @@ class EntryManagerCog(commands.Cog):
             "また、ほかにもあなたの存在を脅かす寿司がいるかもしれない"
         )
         sharer_hos5 = {"HO5"}
-        sharer_text5(
+        sharer_text5 = (
             "あなたは【親子】です。\n"
             "8番とは親子関係だったことを記憶しており、お互いに村人陣営の味方であることを知っています。"
         )
         sharer_hos8 = {"HO8"}
-        sharer_text8(
+        sharer_text8 = (
             "あなたは【親子】です。\n"
             "5番とは親子関係だったことを記憶しており、お互いに村人陣営の味方であることを知っています。"
         )
@@ -510,7 +510,17 @@ class EntryManagerCog(commands.Cog):
             channel = discord.utils.get(guild.text_channels, name=ho.lower())
             if channel is None:
                 continue
-            body = text if (text and target_ho) else (wolf_text if ho in wolf_hos else other_text)
+            if text and target_ho:
+                body = text
+            else:
+                if ho in wolf_hos:
+                    body = wolf_text
+                elif ho in sharer_hos5:
+                    body = sharer_text5
+                elif ho in sharer_hos8:
+                    body = sharer_text8
+                else:
+                    body = other_text
             try:
                 await channel.send(body)
                 sent.append(ho)
