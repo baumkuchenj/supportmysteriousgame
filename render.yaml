@@ -1,10 +1,11 @@
 services:
-  - type: worker
+  - type: web
     name: werewolf-bot
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
+    healthCheckPath: /healthz
     autoDeploy: true
     envVars:
       - key: DISCORD_TOKEN
@@ -21,3 +22,4 @@ services:
         value: werewolf:data
       - key: DEBUG_MODE
         value: "false"
+　
