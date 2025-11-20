@@ -1,10 +1,10 @@
-# 不可思議の人狼 BOT 概要
+# ■■■　不可思議の人狼 BOT 概要
 
-このリポジトリは Discord 上で進行する「不可思議の人狼」用 GM 支援 BOT です。GM 用のダッシュボード、参加者管理、HO 個別チャンネル生成、役職送信/行動 UI、ゲーム終了処理などを提供します。
+このリポジトリは Discord 上で進行する不可思議の人狼用 GM 支援 BOT です。GM 用のダッシュボード、参加者管理、HO 個別チャンネル生成、役職送信/行動 UI、ゲーム終了処理などを提供します。
 
 ## 実行環境
-- 言語: Python 3.13 系（Render ランタイム）
-- ホスティング: Render Web Service（Free プラン想定）
+- 言語: Python 3.13 
+- ホスティング: Render Web Service
   - buildCommand: `pip install -r requirements.txt`
   - startCommand: `python main.py`
   - healthCheckPath: `/healthz`
@@ -24,7 +24,7 @@
     - `STORAGE_BACKEND=upstash`
     - `UPSTASH_REDIS_REST_URL`
     - `UPSTASH_REDIS_REST_TOKEN`
-    - `STORAGE_KEY=werewolf:data`（任意のキーで OK）
+    - `STORAGE_KEY=werewolf:data`
 
 ## Discord Bot 権限
 - OAuth2 スコープ: `bot`, `applications.commands`
@@ -32,8 +32,8 @@
   - Manage Channels（チャンネル作成/移動/編集）
   - Manage Roles（HO ロール作成/付与/剥奪）
   - View Channels / Send Messages / Read Message History
-  - （任意）Embed Links / Attach Files
-- ロール階層: Bot ロールは HO ロールや Player/GM ロールより上位に配置してください。
+  - Embed Links / Attach Files
+
 
 ## コマンド（抜粋）
 - `/entry` … GM ダッシュボードに参加者管理パネルを掲示
@@ -76,15 +76,6 @@
 - UptimeRobot などの外部監視から 5–10 分おきに `GET https://<service>.onrender.com/` を実行
 - 軽量な `/healthz` を用意済み
 
-## 環境変数（例）
-- Discord
-  - `DISCORD_TOKEN`, `APPLICATION_ID`
-- Storage（Upstash）
-  - `STORAGE_BACKEND=upstash`
-  - `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `STORAGE_KEY`
-- その他
-  - `DEBUG_MODE=false`
-
 ## デプロイ（render.yaml 抜粋）
 ```yaml
 services:
@@ -121,5 +112,3 @@ services:
   - デプロイ跨ぎには Upstash を使用（ファイルだと初期化される場合あり）
   - `/rebuild_participants` で player/HO ロールから復元可能
 
-## ライセンス
-- 本プロジェクトのライセンスはリポジトリの方針に従います（未定義の場合はクローズド運用を想定）。
