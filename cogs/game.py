@@ -13,6 +13,7 @@ class GameCog(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="reset_game", description="ゲーム進行データを初期化")
+    @app_commands.default_permissions(manage_guild=True)
     async def reset_game(self, interaction: discord.Interaction):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
@@ -83,6 +84,7 @@ class GameCog(commands.Cog):
             pass
 
     @app_commands.command(name="sync_commands", description="スラッシュコマンドを手動同期（既定: このギルドのみ/高速）")
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(global_sync="Trueでグローバル同期（反映に時間がかかる）")
     async def sync_commands(self, interaction: discord.Interaction, global_sync: bool = False):
         # ギルド外では権限確認が難しいためギルド必須
@@ -128,6 +130,7 @@ class GameCog(commands.Cog):
                 pass
 
     @app_commands.command(name="add_spirit", description="死亡者を霊界に移動（役職\"霊界\"付与＆霊界チャンネル作成/入室）")
+    @app_commands.default_permissions(manage_guild=True)
     async def add_spirit(self, interaction: discord.Interaction, member: discord.Member):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
@@ -257,6 +260,7 @@ class GameCog(commands.Cog):
             pass
 
     @app_commands.command(name="spirit_reverse_button", description="霊界に逆回転ボタンを表示（1回限り）")
+    @app_commands.default_permissions(manage_guild=True)
     async def spirit_reverse_button(self, interaction: discord.Interaction):
         if not interaction.guild:
             await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
@@ -334,6 +338,78 @@ class GameCog(commands.Cog):
             return
         if not interaction.response.is_done():
             await interaction.response.send_message("✅ 逆回転ボタンを設置しました", ephemeral=True)
+
+    @app_commands.command(name="end_game", description="ゲームを終了し、解説チャンネルを設定")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(channel_name="解説チャンネル名（既定: 解説）")
+    async def end_game(self, interaction: discord.Interaction, channel_name: str = "解説"):
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
+            return
+        guild = interaction.guild
+        await Storage.ensure_loaded()
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+        gm_role, gm_dash, gm_log = await ensure_gm_environment(guild)
+        gm_category = gm_dash.category
+        ch_name_lower = str(channel_name).lower()
+        explanation_channel = discord.utils.get(guild.text_channels, name=ch_name_lower)
+        player_role = await ensure_player_role(guild)
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            gm_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
+            player_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
+        }
+        if explanation_channel is None:
+            try:
+                explanation_channel = await guild.create_text_channel(channel_name, category=gm_category, overwrites=overwrites, reason="ゲーム終了時の解説チャンネル")
+            except discord.Forbidden:
+                try:
+                    await interaction.followup.send("チャンネルの作成に失敗しました（権限不足）", ephemeral=True)
+                except Exception:
+                    pass
+                return
+            except Exception as e:
+                try:
+                    await interaction.followup.send(f"チャンネルの作成に失敗しました: {e}", ephemeral=True)
+                except Exception:
+                    pass
+                return
+            try:
+                await explanation_channel.send("ゲーム終了。ここで振り返りや解説を行ってください。")
+            except Exception:
+                pass
+        else:
+            try:
+                if explanation_channel.category_id != gm_category.id:
+                    await explanation_channel.edit(category=gm_category)
+                await explanation_channel.edit(overwrites=overwrites)
+            except discord.Forbidden:
+                try:
+                    await interaction.followup.send("チャンネルの設定変更に失敗しました（権限不足）", ephemeral=True)
+                except Exception:
+                    pass
+                return
+            except Exception as e:
+                try:
+                    await interaction.followup.send(f"チャンネルの設定変更に失敗しました: {e}", ephemeral=True)
+                except Exception:
+                    pass
+                return
+        try:
+            await interaction.followup.send(f"ゲームを終了しました。解説チャンネル: {explanation_channel.mention}", ephemeral=True)
+        except Exception:
+            pass
+        try:
+            await gm_log.send(f"[GM Action] {interaction.user.mention} ゲーム終了 / 解説チャンネル: {explanation_channel.mention}")
+        except Exception:
+            pass
 
 
 async def setup(bot: commands.Bot):
