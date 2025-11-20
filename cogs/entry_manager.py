@@ -421,6 +421,74 @@ class EntryManagerCog(commands.Cog):
             except Exception:
                 pass
 
+    @app_commands.command(name="rebuild_participants", description="player/HOロールから参加者一覧を復元（HO割当も反映）")
+    async def rebuild_participants(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("サーバー内で実行してください", ephemeral=True)
+            return
+        if not has_gm_or_manage_guild(interaction):
+            await interaction.response.send_message("このコマンドを実行する権限がありません (GM または サーバーの管理が必要)", ephemeral=True)
+            return
+        await Storage.ensure_loaded()
+        guild = interaction.guild
+        # 先にdefer
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+        player_role = await ensure_player_role(guild)
+        # HOロールの収集
+        ho_roles = [r for r in guild.roles if str(r.name).upper().startswith("HO")]
+        # id -> ho 候補（複数持っている場合は番号が小さいものを優先）
+        ho_by_user: dict[int, str] = {}
+        for r in ho_roles:
+            try:
+                members = [m for m in r.members if not m.bot]
+            except Exception:
+                members = []
+            for m in members:
+                try:
+                    n = int(str(r.name).upper().replace("HO", ""))
+                except Exception:
+                    n = 9999
+                prev = ho_by_user.get(int(m.id))
+                if not prev:
+                    ho_by_user[int(m.id)] = str(r.name).upper()
+                else:
+                    try:
+                        prev_n = int(prev.replace("HO", ""))
+                    except Exception:
+                        prev_n = 9999
+                    if n < prev_n:
+                        ho_by_user[int(m.id)] = str(r.name).upper()
+        # 参加対象のメンバー集合: playerロール or HOロール保持者
+        members_set = set()
+        for m in guild.members:
+            if m.bot:
+                continue
+            if (player_role and player_role in m.roles) or (int(m.id) in ho_by_user):
+                members_set.add(int(m.id))
+        # participants を構築
+        participants = []
+        for uid in sorted(members_set):
+            m = guild.get_member(uid)
+            if not m:
+                continue
+            participants.append({
+                "id": int(m.id),
+                "name": str(m.display_name),
+                "ho": ho_by_user.get(int(m.id)),
+            })
+        Storage.set_participants(guild.id, participants)
+        # パネル再掲
+        await _upsert_dashboard_panel(guild)
+        try:
+            await interaction.followup.send(f"🛠️ 参加者を復元しました（{len(participants)}名）。HO割当はロールから復元。", ephemeral=True)
+        except Exception:
+            pass
+        await _gm_log_interaction(interaction, f"参加者復元（player/HOロールから再構築、{len(participants)}名）")
+
     @app_commands.command(name="post_hint_buttons", description="ダッシュボードにヒントボタンを表示（ヒント1→ヒント/ 2-4→霊界）")
     async def post_hint_buttons(self, interaction: discord.Interaction):
         if not interaction.guild:
