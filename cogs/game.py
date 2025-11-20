@@ -391,17 +391,27 @@ class GameCog(commands.Cog):
                     await explanation_channel.edit(category=gm_category)
                 await explanation_channel.edit(overwrites=overwrites)
             except discord.Forbidden:
+                # フォールバック: 新規に解説チャンネルを作成
                 try:
-                    await interaction.followup.send("チャンネルの設定変更に失敗しました（権限不足）", ephemeral=True)
-                except Exception:
-                    pass
-                return
+                    new_ch = await guild.create_text_channel(channel_name, category=gm_category, overwrites=overwrites, reason="ゲーム終了時の解説チャンネル（既存編集不可のため新規作成）")
+                    explanation_channel = new_ch
+                except Exception as e2:
+                    try:
+                        await interaction.followup.send(f"既存チャンネルの設定変更に失敗し、新規作成も失敗しました: {e2}", ephemeral=True)
+                    except Exception:
+                        pass
+                    return
             except Exception as e:
+                # その他の失敗もフォールバックで新規作成を試みる
                 try:
-                    await interaction.followup.send(f"チャンネルの設定変更に失敗しました: {e}", ephemeral=True)
-                except Exception:
-                    pass
-                return
+                    new_ch = await guild.create_text_channel(channel_name, category=gm_category, overwrites=overwrites, reason=f"ゲーム終了時の解説チャンネル（移動/編集失敗: {e}）")
+                    explanation_channel = new_ch
+                except Exception as e2:
+                    try:
+                        await interaction.followup.send(f"チャンネルの設定変更に失敗し、新規作成も失敗しました: {e2}", ephemeral=True)
+                    except Exception:
+                        pass
+                    return
         try:
             await interaction.followup.send(f"ゲームを終了しました。解説チャンネル: {explanation_channel.mention}", ephemeral=True)
         except Exception:

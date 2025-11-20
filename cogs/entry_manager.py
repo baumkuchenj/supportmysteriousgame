@@ -466,11 +466,9 @@ class EntryManagerCog(commands.Cog):
         wolf_hos = {"HO1", "HO4", "HO10"}
         wolf_text = (
             "あなたは【寿司狼】です。\n"
-            "この回転寿司屋の安っぽいレーンで回されている寿司たちに、かつて海を自由に泳いでいた魚としての誇りを思い出させるため、襲撃を行います。\n"
+            "この回転寿司屋の安っぽいレーンで流されている寿司たちに、かつては海を自由に泳いでいた魚としての誇りを思い出させるため、あなたは襲撃を行います。\n"
             "能力:毎晩一人を指名し、襲撃を行う\n"
-            "尚、この回転寿司屋では、役職は回転しており、\n"
-            "寿司たちは記憶を失ったまま、毎晩誰かしら一人を指名している\n"
-            "また、ほかにもあなたの存在を脅かす寿司がいるかもしれない"
+            "寿司たち(村人達)は記憶を失っており、自分たちが寿司であることすら忘れています。\n"
         )
         sharer_hos5 = {"HO5"}
         sharer_text5 = (
@@ -586,6 +584,9 @@ async def _do_close_entry(interaction: discord.Interaction):
                 gm_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
                 ho_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True),
             }
+            me = getattr(guild, "me", None)
+            if me is not None:
+                overwrites[me] = discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=True)
             try:
                 channel = await guild.create_text_channel(ch_name, category=category, overwrites=overwrites, reason="Create HO private channel")
             except discord.Forbidden:
@@ -644,11 +645,11 @@ async def _do_next_day(interaction: discord.Interaction):
     Storage.save()
     day = Storage.data["game"][str(interaction.guild.id)]["day"]
     await _gm_log_interaction(interaction, f"翌日に進行。現在 {day} 日目")
-    # 翌日に進んだら、GMダッシュボードに役職行動フェーズUIを掲示（朝に配布する連絡を選べる）
+    # 翌日に進んだら、GMダッシュボードに役職送信フェーズUIを掲示（朝に配布する連絡を選べる）
     _, gm_dash, _ = await ensure_gm_environment(interaction.guild)
     new_msg = await gm_dash.send(
-        "役職行動フェーズ: 役職/対象/送る内容を選んで送信してください\n- 送信ボタンと翌日に進むボタンが利用可能です",
-        view=_build_role_action_phase_view(interaction.guild.id),
+        "役職送信フェーズ: 役職/対象/送る内容を選んで送信してください",
+        view=_build_role_send_phase_view(interaction.guild.id),
     )
     try:
         await _disable_old_role_message_ui(interaction.guild, keep_id=new_msg.id)
@@ -982,7 +983,28 @@ def _build_role_send_phase_view(guild_id: int) -> discord.ui.View:
                         await interaction.response.edit_message(content=pv._summary_text(), view=pv)
                     return
                 view = _build_action_view(interaction.guild, role, str(dest))
-                await channel.send(text, view=view)
+                try:
+                    await channel.send(text, view=view)
+                except discord.Forbidden:
+                    try:
+                        me = getattr(interaction.guild, "me", None)
+                        if me is not None:
+                            await channel.set_permissions(me, view_channel=True, read_message_history=True, send_messages=True)
+                            await channel.send(text, view=view)
+                        else:
+                            raise
+                    except discord.Forbidden:
+                        if not interaction.response.is_done():
+                            try:
+                                await interaction.response.defer(ephemeral=True)
+                            except Exception:
+                                pass
+                        try:
+                            await interaction.followup.send("❌ 送信先チャンネルにアクセスできません。Botの権限を確認してください。", ephemeral=True)
+                        except Exception:
+                            pass
+                        await _gm_log_interaction(interaction, f"[WARN] 役職連絡送信失敗（権限不足）: {role} → {dest}")
+                        return
                 if not interaction.response.is_done():
                     try:
                         await interaction.response.defer(ephemeral=True)
